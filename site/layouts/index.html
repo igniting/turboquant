@@ -1,0 +1,101 @@
+{{ define "main" }}
+<div class="landing">
+  <div class="landing-bg"></div>
+  <div class="landing-content">
+    <h1 class="landing-title">
+      <span class="title-accent">Turbo</span>Quant
+    </h1>
+    <p class="landing-subtitle">How Google Compresses LLM Memory 6&times; Without Losing a Single Answer</p>
+    <img src="/img/s17-closing.webp" alt="TurboQuant overview" class="landing-hero"/>
+    <div class="landing-meta">
+      <div class="meta-item">
+        <span class="meta-icon">&#9638;</span>
+        <span>17 sections</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-icon">&#9881;</span>
+        <span>6 parts</span>
+      </div>
+    </div>
+
+    <div class="toc">
+      <div class="toc-part">
+        <div class="toc-part-label">Part I &mdash; Setting the Stage</div>
+        {{ range where .Site.RegularPages "Section" "slides" }}
+          {{ if le .Params.weight 3 }}
+          <a href="{{ .Permalink }}" class="toc-entry">
+            <span class="toc-number">{{ printf "%02d" .Params.weight }}</span>
+            <span class="toc-title">{{ .Title }}</span>
+          </a>
+          {{ end }}
+        {{ end }}
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-label">Part II &mdash; The KV Cache Problem</div>
+        {{ range where .Site.RegularPages "Section" "slides" }}
+          {{ if and (ge .Params.weight 4) (le .Params.weight 5) }}
+          <a href="{{ .Permalink }}" class="toc-entry">
+            <span class="toc-number">{{ printf "%02d" .Params.weight }}</span>
+            <span class="toc-title">{{ .Title }}</span>
+          </a>
+          {{ end }}
+        {{ end }}
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-label">Part III &mdash; Quantization Fundamentals</div>
+        {{ range where .Site.RegularPages "Section" "slides" }}
+          {{ if and (ge .Params.weight 6) (le .Params.weight 7) }}
+          <a href="{{ .Permalink }}" class="toc-entry">
+            <span class="toc-number">{{ printf "%02d" .Params.weight }}</span>
+            <span class="toc-title">{{ .Title }}</span>
+          </a>
+          {{ end }}
+        {{ end }}
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-label">Part IV &mdash; The Algorithm</div>
+        {{ range where .Site.RegularPages "Section" "slides" }}
+          {{ if and (ge .Params.weight 8) (le .Params.weight 11) }}
+          <a href="{{ .Permalink }}" class="toc-entry">
+            <span class="toc-number">{{ printf "%02d" .Params.weight }}</span>
+            <span class="toc-title">{{ .Title }}</span>
+          </a>
+          {{ end }}
+        {{ end }}
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-label">Part V &mdash; Does It Actually Work?</div>
+        {{ range where .Site.RegularPages "Section" "slides" }}
+          {{ if and (ge .Params.weight 12) (le .Params.weight 14) }}
+          <a href="{{ .Permalink }}" class="toc-entry">
+            <span class="toc-number">{{ printf "%02d" .Params.weight }}</span>
+            <span class="toc-title">{{ .Title }}</span>
+          </a>
+          {{ end }}
+        {{ end }}
+      </div>
+
+      <div class="toc-part">
+        <div class="toc-part-label">Part VI &mdash; Practical &amp; Closing</div>
+        {{ range where .Site.RegularPages "Section" "slides" }}
+          {{ if ge .Params.weight 15 }}
+          <a href="{{ .Permalink }}" class="toc-entry">
+            <span class="toc-number">{{ printf "%02d" .Params.weight }}</span>
+            <span class="toc-title">{{ .Title }}</span>
+          </a>
+          {{ end }}
+        {{ end }}
+      </div>
+    </div>
+
+    {{ $first := index (where .Site.RegularPages.ByWeight "Section" "slides") 0 }}
+    <a href="{{ $first.Permalink }}" class="start-btn">
+      Begin Presentation <span class="arrow">&rarr;</span>
+    </a>
+  </div>
+</div>
+{{ end }}

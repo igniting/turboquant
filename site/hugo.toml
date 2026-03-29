@@ -1,0 +1,17 @@
+baseURL = "/"
+languageCode = "en-us"
+title = "TurboQuant: KV Cache Compression for LLMs"
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+  [markup.highlight]
+    style = "monokai"
+    lineNos = false
+    noClasses = false
+
+[params]
+  author = "TurboQuant Research"
+  description = "How Google Compresses LLM Memory 6x Without Losing a Single Answer"
+  totalSections = 17

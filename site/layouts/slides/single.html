@@ -1,0 +1,77 @@
+{{ define "main" }}
+{{ $slides := where .Site.RegularPages.ByWeight "Section" "slides" }}
+{{ $current := .Params.weight }}
+{{ $total := len $slides }}
+{{ $progress := mul (div (float $current) (float $total)) 100 }}
+
+<div class="slide-wrapper">
+  <!-- Top navigation bar -->
+  <nav class="slide-nav">
+    <a href="/" class="nav-home" title="Table of Contents">
+      <span class="nav-logo"><span class="logo-accent">T</span>Q</span>
+    </a>
+    <div class="nav-progress-container">
+      <div class="nav-progress-bar" style="width: {{ $progress }}%"></div>
+    </div>
+    <div class="nav-info">
+      <span class="nav-section">{{ printf "%02d" $current }}/{{ printf "%02d" $total }}</span>
+    </div>
+  </nav>
+
+  <!-- Part label -->
+  {{ with .Params.part }}
+  <div class="part-label">{{ . }}</div>
+  {{ end }}
+
+  <!-- Main slide content -->
+  <article class="slide-content">
+    <header class="slide-header">
+      <span class="section-number">Section {{ printf "%02d" $current }}</span>
+      <h1>{{ .Title }}</h1>
+    </header>
+
+    <div class="slide-body">
+      {{ .Content }}
+    </div>
+  </article>
+
+  <!-- Bottom navigation (Hugo's Prev/Next are reversed relative to weight order) -->
+  <nav class="slide-footer">
+    {{ with .NextInSection }}
+    <a href="{{ .Permalink }}" class="nav-btn nav-prev" title="Previous: {{ .Title }}">
+      <span class="nav-arrow">&larr;</span>
+      <span class="nav-label">
+        <span class="nav-direction">Previous</span>
+        <span class="nav-target">{{ .Title }}</span>
+      </span>
+    </a>
+    {{ else }}
+    <a href="/" class="nav-btn nav-prev">
+      <span class="nav-arrow">&larr;</span>
+      <span class="nav-label">
+        <span class="nav-direction">Back to</span>
+        <span class="nav-target">Table of Contents</span>
+      </span>
+    </a>
+    {{ end }}
+
+    {{ with .PrevInSection }}
+    <a href="{{ .Permalink }}" class="nav-btn nav-next" title="Next: {{ .Title }}">
+      <span class="nav-label">
+        <span class="nav-direction">Next</span>
+        <span class="nav-target">{{ .Title }}</span>
+      </span>
+      <span class="nav-arrow">&rarr;</span>
+    </a>
+    {{ else }}
+    <a href="/" class="nav-btn nav-next">
+      <span class="nav-label">
+        <span class="nav-direction">Back to</span>
+        <span class="nav-target">Table of Contents</span>
+      </span>
+      <span class="nav-arrow">&rarr;</span>
+    </a>
+    {{ end }}
+  </nav>
+</div>
+{{ end }}
