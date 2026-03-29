@@ -34,7 +34,9 @@ Modern LLM inference is converging toward a **layered compression stack** where 
 │    Typical: 3-4 bits (4-5× compression)                 │
 │    Status:  Emerging. TurboQuant is leading.            │
 │                                                         │
-│  Combined: 4× × 2× × 4.6× = ~37× total improvement    │
+│  Each layer compresses a different memory pool.         │
+│  The savings are additive, not multiplicative —         │
+│  but together they dramatically shrink total footprint. │
 └─────────────────────────────────────────────────────────┘
 ```
 

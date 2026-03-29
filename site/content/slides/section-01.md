@@ -6,7 +6,7 @@ part: "Part I — Setting the Stage"
 
 ![KV Cache: The Real Memory Monster](/img/s01-memory-monster.webp)
 
-Have you ever hit an out-of-memory error while running an LLM -- either locally or in production? You're not alone. This section explains exactly *where* that memory goes, and how a paper from Google Research makes most of it disappear -- without losing a single correct answer.
+Running Llama 3.1 8B with 512 concurrent users at 32K context requires **8 TB of memory** -- just for the KV cache. That's 100 H100 GPUs doing nothing but storing past tokens. This section explains exactly *where* that memory goes, and how a [paper from Google Research](https://arxiv.org/abs/2504.19874) makes most of it disappear -- without losing a single correct answer.
 
 ---
 
@@ -38,7 +38,7 @@ Every new token adds a fixed amount of memory. And it adds that memory **at ever
 
 ## The Brutal Math
 
-Let's do the math for **Llama 3.1 8B**, a relatively small model:
+Let's do the math for **Llama 3.1 8B**, a relatively small model. (Note: this calculation assumes the non-GQA configuration for simplicity. Real Llama 3.1 uses Grouped Query Attention with 8 KV heads instead of 32, reducing the cache by 4x -- but even with GQA, the KV cache dominates at long contexts.)
 
 ```
 KV cache per token = 2 (key + value)

@@ -6,66 +6,37 @@ part: "Part V — Does It Actually Work?"
 
 ![Empirical Validation](/img/s12-empirical.webp)
 
-We've spent considerable time building up the theory. Beautiful math -- but does it actually work on real data?
+We've built up the theory across several sections. Does it hold up on real data? The paper validates on the **DBpedia Entities dataset** -- 100,000 real-world text embeddings from OpenAI's embedding model (1536 dimensions), with 1,000 separate query vectors for inner product accuracy.
 
 ---
 
-## Setup
+## Every Theoretical Prediction Is Confirmed
 
-The paper validates on the **DBpedia Entities dataset** -- 100,000 real-world text embeddings produced by OpenAI's embedding model, in 1536 dimensions. These aren't synthetic vectors -- they're the kind you'd actually store in a vector database. They use 1,000 separate query vectors to measure inner product accuracy.
+The paper tests four specific predictions, and all four match experiment:
 
----
-
-## Result 1: Distortion Matches the Bounds
-
-Measured MSE sits **right between the upper and lower bounds** at every bit-width from 1 to 5. The theory doesn't just give the right order of magnitude -- it gives the right constants.
-
-> **The theory is tight.** What the math predicts is what you get in practice.
-
----
-
-## Result 2: Unbiasedness Is Confirmed
-
-The distribution of inner product errors across all 100M vector pairs:
-
-- **TurboQuant_prod**: error distribution centered at **zero** -- symmetric, confirming unbiasedness at every bit-width
-- **TurboQuant_mse**: error distribution **shifted right** -- systematically positive (inner products underestimated), confirming the bias predicted in Section 10. The shift decreases with higher bit-widths, exactly as theory predicts.
+| What the theory predicted | What the experiments showed |
+|---|---|
+| MSE $\leq 2.72 \times 4^{-b}$ | Measured MSE falls between upper and lower bounds at every bit-width (1 through 5). The constants match, not just the order of magnitude. |
+| Each bit reduces error by 4x | Consistent ~4x reduction observed at each step |
+| TurboQuant_prod is unbiased | Inner product error distribution is symmetric and centered at zero |
+| TurboQuant_mse has bias that grows with true IP | Error shifts rightward (underestimates), and the shift is larger for higher true inner products -- exactly the non-uniform bias from Section 10 |
 
 ---
 
-## Result 3: Bias Depends on Inner Product Magnitude
+## MSE-Only vs Two-Stage: The Bias Is Visible
 
-At 2-bit quantization, grouping vector pairs by their true inner product:
+The clearest result: when you plot the inner product error distribution for both variants, TurboQuant_prod gives a symmetric bell curve centered at zero (unbiased), while TurboQuant_mse gives a bell curve shifted to the right (biased -- systematically underestimates inner products).
+
+At 2-bit quantization, the bias pattern is stark:
 
 ```
-TurboQuant_prod:
-  Avg IP = 0.01  → error centered at 0
-  Avg IP = 0.06  → error centered at 0
-  Avg IP = 0.10  → error centered at 0       ← unbiased regardless of IP
-  Avg IP = 0.17  → error centered at 0
+TurboQuant_prod:                    TurboQuant_mse:
 
-TurboQuant_mse:
-  Avg IP = 0.01  → error centered near 0
-  Avg IP = 0.06  → error shifted slightly right
-  Avg IP = 0.10  → error shifted more right   ← bias grows with
-  Avg IP = 0.17  → error shifted even more       true inner product
+  All IP magnitudes → error          Low IPs  → small bias
+  centered at zero                   High IPs → large bias
+  (unbiased ✓)                       (non-uniform bias ✗)
 ```
 
-This confirms the non-uniform bias from Section 10: TurboQuant_mse's bias grows with the true IP value, while TurboQuant_prod's error is independent of it.
+At higher bit-widths (3-4 bits), the MSE variant's bias shrinks and becomes harder to distinguish from noise -- foreshadowing the practical finding in Section 15 that MSE-only is often sufficient.
 
----
-
-## The Bottom Line
-
-```
-Theory said:                              Experiments confirm:
-─────────────                             ─────────────────────
-MSE ≤ 2.72 × 4⁻ᵇ                         Measured MSE falls between bounds  ✓
-Inner product estimator is unbiased       Error centered at zero             ✓
-MSE quantizer has bias ∝ true IP          Bias grows with IP magnitude       ✓
-Each bit reduces error by ~4×             Consistent 4× reduction observed   ✓
-```
-
-The theory isn't aspirational -- it's descriptive. Every prediction matches the measurement.
-
-Now let's see what this means for actual LLM performance -- not just vector-level metrics, but end-to-end generation quality.
+> **The theory isn't aspirational -- it's descriptive.** Every prediction matches the measurement. But vector-level metrics are just a proxy. The real test is: does the model still give correct answers?

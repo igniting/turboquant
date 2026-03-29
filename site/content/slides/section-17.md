@@ -61,3 +61,13 @@ TurboQuant is one algorithm, but it represents a broader shift. The era of solvi
 Shannon proved in the 1940s that there are fundamental limits to compression. Zador extended this to vectors in the 1960s. Lloyd and Max designed optimal scalar quantizers in the 1950s and 60s. The Johnson-Lindenstrauss lemma dates to 1984.
 
 TurboQuant combines ideas that are **40 to 80 years old** -- random rotation, optimal scalar quantization, information-theoretic lower bounds -- and applies them to a problem that didn't exist three years ago. That's the power of understanding fundamentals.
+
+---
+
+## Read the Paper, Try the Code
+
+- **The paper:** [TurboQuant: Online Vector Quantization with Near-Optimal Distortion Rate](https://arxiv.org/abs/2504.19874) (Google Research)
+- **Community implementations:** [llama.cpp discussion #20969](https://github.com/ggerganov/llama.cpp/discussions/20969) (working end-to-end on Apple Silicon)
+- **vLLM integration:** Feature request open for native support
+
+The algorithm is simple enough to implement in a weekend. The math guarantees it works. The benchmarks confirm it. The only question is when, not whether, this becomes standard infrastructure.

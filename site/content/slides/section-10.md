@@ -93,3 +93,5 @@ What we need (TurboQuant_prod):
 ```
 
 The next section shows how TurboQuant achieves this with an elegant two-stage approach: use the MSE quantizer to get close, then apply a 1-bit correction to remove the bias.
+
+*(A preview for the skeptical reader: in Section 15 we'll see that community implementations have found the two-stage fix isn't always worth it at 3+ bits -- the QJL correction's variance can hurt more than the small residual bias. But understanding the theory is essential for knowing when each variant is appropriate.)*
