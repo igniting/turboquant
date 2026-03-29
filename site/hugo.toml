@@ -1,4 +1,4 @@
-baseURL = "/"
+baseURL = "https://igniting.github.io/turboquant/"
 languageCode = "en-us"
 title = "TurboQuant: KV Cache Compression for LLMs"
 
