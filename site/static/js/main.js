@@ -27,7 +27,8 @@ document.addEventListener('keydown', function(e) {
       });
       break;
     case 'Escape':
-      window.location.href = '/';
+      var homeLink = document.querySelector('.nav-home');
+      window.location.href = homeLink ? homeLink.href : '/';
       break;
   }
 });

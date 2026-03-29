@@ -7,7 +7,7 @@
 <div class="slide-wrapper">
   <!-- Top navigation bar -->
   <nav class="slide-nav">
-    <a href="/" class="nav-home" title="Table of Contents">
+    <a href="{{ "/" | relURL }}" class="nav-home" title="Table of Contents">
       <span class="nav-logo"><span class="logo-accent">T</span>Q</span>
     </a>
     <div class="nav-progress-container">
@@ -46,7 +46,7 @@
       </span>
     </a>
     {{ else }}
-    <a href="/" class="nav-btn nav-prev">
+    <a href="{{ "/" | relURL }}" class="nav-btn nav-prev">
       <span class="nav-arrow">&larr;</span>
       <span class="nav-label">
         <span class="nav-direction">Back to</span>
@@ -64,7 +64,7 @@
       <span class="nav-arrow">&rarr;</span>
     </a>
     {{ else }}
-    <a href="/" class="nav-btn nav-next">
+    <a href="{{ "/" | relURL }}" class="nav-btn nav-next">
       <span class="nav-label">
         <span class="nav-direction">Back to</span>
         <span class="nav-target">Table of Contents</span>
