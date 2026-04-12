@@ -53,24 +53,38 @@ These three vectors are produced by multiplying the token's embedding by three d
 
 ---
 
-## How Attention Heads Are Shared — MHA, GQA, and MQA
+## How Attention Heads Are Shared — MHA, GQA, MQA, and MLA
 
 In the original transformer, every attention head has its *own* independent Q, K, and V vectors — this is **Multi-Head Attention (MHA)**. Every head has an independent key and value cache. This maximizes expressivity but produces the largest KV cache.
 
-Modern models use variants that share Key and Value heads across groups of Query heads:
+Modern models use variants that reduce the KV cache either by sharing heads across queries, or by architectural rethinking:
 
 | Architecture | KV heads | Used by | KV Cache vs MHA |
 |---|:---:|---|:---:|
 | **MHA** (Multi-Head Attention) | 32 (one per Q head) | GPT-2, early BERT | 1× (baseline) |
 | **GQA** (Grouped Query Attention) | 8 (shared across groups of 4) | Llama 3, Mistral, Gemma | 0.25× |
 | **MQA** (Multi-Query Attention) | 1 (shared across all Q heads) | Falcon, PaLM | 0.03× |
-| **MLA** (Multi-head Latent Attention) | Low-rank projection | DeepSeek-V2/V3 | ~0.06–0.13×* |
+| **MLA** (Multi-head Latent Attention) | Low-rank projection | DeepSeek-V2/V3/R1 | ~0.06–0.13×* |
 
 **GQA** is now the dominant approach. Llama 3, Mistral, Gemma, and Qwen all use it. Instead of 32 independent K/V heads, GQA has 8 K/V heads each shared by 4 Q heads. This gives 4× KV cache reduction with minimal quality loss.
 
-**MLA** (used by DeepSeek) takes a fundamentally different approach: rather than sharing heads, it projects Keys and Values into a shared low-rank latent space and decompresses at attention time. The actual cache reduction depends on the rank chosen and the model's head dimension — the ~0.06–0.13× figure is a rough estimate across known DeepSeek configurations, not a fixed ratio.
+**MLA** (used by DeepSeek) is not a minor variant — it is the architectural alternative to TurboQuant. Rather than sharing heads, MLA compresses Keys and Values into a low-rank latent vector *during training*, and decompresses at attention time. The actual cache reduction depends on the chosen rank and head dimension — the ~0.06–0.13× figure covers known DeepSeek configurations, not a fixed ratio.
 
-> **GQA and TurboQuant are complementary, not alternatives.** GQA cuts the cache 4× at the architecture level by reducing the number of heads. TurboQuant compresses each remaining head's cache another 4× at the bit-width level. On a GQA model, combining both gives roughly 16× reduction versus a full-precision MHA baseline — though the exact number depends on both the GQA configuration and the TurboQuant bit-width chosen.
+The strategic distinction matters:
+
+```
+GQA + TurboQuant:  Inference-time compression of a GQA cache.
+                   Applies to already-trained models. No training changes needed.
+                   Lossy, but bounded by theory.
+
+MLA:               Architecture-level compression baked in at training time.
+                   Requires training the model differently from scratch.
+                   Achieves even smaller cache sizes, with no quantization loss.
+```
+
+> **These are not competing approaches to the same problem — they represent a choice made at different stages.** If you are training a new model from scratch, MLA avoids the KV cache problem architecturally. If you are serving an already-trained GQA model, TurboQuant is the path to compression. Most open models deployed today use GQA, which is why TurboQuant is immediately applicable to the existing model ecosystem.
+
+**GQA + TurboQuant together** give roughly 16× reduction versus a full-precision MHA baseline — though the exact number depends on both the GQA configuration and the TurboQuant bit-width chosen.
 
 ---
 
@@ -138,11 +152,30 @@ This is the token's updated representation -- enriched with contextual informati
 Notice what happens at generation time:
 
 - **Query:** Used to score "what does the *current* token care about?" Generated fresh for every new token.
-- **Key:** Represents "what does each past token contain?" — computed once when the token is first processed, never changes.
-- **Value:** Represents "what information does each past token carry?" — same, computed once.
+- **Key:** Represents "what does each past token contain?" — computed once when the token is first processed, then cached.
+- **Value:** Represents "what information does each past token carry?" — same, computed once and cached.
 
 This is exactly why only K and V get cached. Queries are local to the current step; Keys and Values belong to all past context and are reused every step.
 
 > **The KV cache is just the accumulated Keys and Values for every past token, across every layer, saved to avoid recomputation.**
 
 And this is precisely what TurboQuant compresses.
+
+---
+
+## A Critical Implementation Detail: RoPE Rotates Keys Before Caching
+
+One thing the simplified description above glosses over: in the majority of modern models — Llama, Mistral, Gemma, Qwen, and others — Keys are not cached in their raw form. These models use **Rotary Position Embeddings (RoPE)**, which applies a position-dependent rotation to every Key (and Query) vector before the dot product is computed.
+
+```
+RoPE in a nutshell:
+  Raw Key for token at position p:  k_raw   (model output, position-agnostic)
+  Rotated Key:                      k = R(p) · k_raw  (what actually gets cached)
+
+  R(p) is a rotation matrix that encodes position p.
+  The same word at position 10 has a different Key than at position 100.
+```
+
+The important practical consequence: TurboQuant quantizes **after** the RoPE rotation is applied — it compresses $k = R(p) \cdot k_\text{raw}$, not the raw $k_\text{raw}$. Any correct implementation must apply RoPE first, then quantize. Implementations that quantize pre-rotation and apply RoPE at lookup time will produce subtly incorrect attention scores.
+
+This is not a gap in TurboQuant — it quantizes whatever vector it receives — but it is a real correctness footgun for anyone building from scratch.
