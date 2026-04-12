@@ -98,3 +98,66 @@ Capability:
 ```
 
 > **TurboQuant doesn't just save memory -- it shifts what's economically and technically feasible.**
+
+---
+
+## Decode Throughput vs. Time to First Token
+
+One important distinction for production systems: TurboQuant's benefits are concentrated in the **decode** phase, not prefill.
+
+**Prefill** (processing the input prompt) is **compute-bound** — the GPU is running matrix multiplications at near-peak utilization. Reading the KV cache is not the bottleneck here. TurboQuant has minimal impact on prefill speed or time-to-first-token (TTFT).
+
+**Decode** (generating output tokens one at a time) is **memory-bandwidth-bound** — the GPU is idle most of the time, waiting to read the KV cache. TurboQuant directly targets this bottleneck.
+
+```
+Where TurboQuant helps:
+  ✅ Decode throughput (tokens/s for long generations)
+  ✅ Concurrent user capacity (more users per GPU)
+  ✅ Max context length per GPU
+  ❌ Time to first token (TTFT) — prefill is compute-bound, not bandwidth-bound
+
+Design implication:
+  For latency-sensitive (chatbot, copilot):  TTFT matters → FlashAttention, chunked prefill
+  For throughput-sensitive (batch, agents):  Decode speed matters → TurboQuant
+  For long-context (documents, codebases):  Both → use all three
+```
+
+> **TurboQuant is a decode optimization. Pair it with chunked prefill or speculative decoding for latency-sensitive workloads.**
+
+---
+
+## Disaggregated Serving — Where TurboQuant Has Untapped Leverage
+
+Modern high-throughput inference increasingly uses **disaggregated prefill/decode**: prefill runs on a cluster of compute-optimized nodes, decode runs on memory-optimized nodes, and the KV cache is transferred over the network between them.
+
+At 128K context with a 70B model, a single request's KV cache can exceed 50 GB at full precision — a significant network transfer on every new session.
+
+```
+Without TurboQuant:
+  Prefill node → [50 GB KV transfer over NVLink / InfiniBand] → Decode node
+
+With TurboQuant:
+  Prefill node → [quantize to 3.5 bits on-the-fly]
+             → [~11 GB transfer]
+             → Decode node (runs directly from compressed cache)
+```
+
+A 4-5× reduction in KV transfer size translates directly into lower inter-node latency and higher effective throughput per network link. This is an emerging application area — disaggregated serving systems like Mooncake and SGLang's disaggregated mode are well-positioned to benefit.
+
+---
+
+## Compatibility Summary
+
+For teams evaluating TurboQuant alongside their existing infrastructure:
+
+| Technology | Compatible with TurboQuant? | Notes |
+|---|:---:|---|
+| PagedAttention (vLLM) | ✅ Yes | Orthogonal — manages allocation, not size |
+| FlashAttention | ✅ Yes | Orthogonal — speeds prefill compute |
+| Prefix caching | ✅ Yes | Rotation is deterministic per model load |
+| Speculative decoding | ✅ Yes | Acceptance rates unaffected at 3+ bits |
+| Continuous batching | ✅ Yes | Smaller KV raises the memory watermark |
+| GQA / MQA models | ✅ Yes | Compresses the already-reduced KV heads |
+| Disaggregated serving | ✅ Yes | Reduces cross-node KV transfer size |
+| Pure SSM models (Mamba) | ❌ N/A | No KV cache to compress |
+| TensorRT-LLM | ⏳ Pending | Not yet integrated |
