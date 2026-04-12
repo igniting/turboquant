@@ -95,3 +95,33 @@ The finish line is mathematically unreachable by anyone.
 This constant arises from using Lloyd-Max scalar quantization applied to a Gaussian distribution. The Gaussian approximation isn't exact -- real vectors after rotation are close to Gaussian but not perfectly so -- which is why the theoretical bound leaves a 2.72x gap. In practice, the measured MSE is typically tighter than the bound.
 
 > **TurboQuant is near-optimal by a mathematical proof, not just empirical comparison.** The ceiling on improvement for any algorithm is 2.72x better, and that ceiling is unreachable in practice.
+
+---
+
+## What "Near-Optimal" Actually Means Here
+
+One important nuance: the lower bound applies within a specific problem class. It is the best that any **scalar quantization, distribution-agnostic, online** algorithm can do.
+
+"Online" is the binding constraint: TurboQuant quantizes each KV vector as it is generated, with no look-ahead and no statistics from future tokens. This eliminates approaches like Product Quantization (PQ) or VQ-VAE-style neural codebooks, which need a data sample to learn their codebooks.
+
+Approaches that step outside this class can achieve better compression:
+
+- **Product Quantization** — trains a codebook offline on sampled data, achieving better compression at the cost of an offline calibration step. Impractical for online KV cache quantization.
+- **MLA (architectural)** — bakes compression into the model during training. Not quantization at all; it changes what gets cached. No bit-budget constraint; no online inference required. But requires retraining from scratch.
+
+> **The near-optimality guarantee means no one can beat TurboQuant with a better online scalar quantizer.** It does not mean no one can beat it by changing the rules — using offline calibration, or redesigning the model architecture. Those are different games.
+
+---
+
+## Convergence of the Two Approaches
+
+The long-term inference stack probably includes both:
+
+```
+New models:         Train with MLA → architectural KV compression, no quantization needed
+Existing GQA models: Deploy with TurboQuant → near-optimal online compression of current architecture
+
+Neither makes the other irrelevant.
+TurboQuant is the best compression for the models that exist today.
+MLA is the design choice for models being trained tomorrow.
+```
