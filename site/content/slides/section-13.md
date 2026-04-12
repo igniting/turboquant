@@ -69,16 +69,16 @@ TurboQuant handles this naturally by running two independent instances with diff
 
 After the March 2026 release, the turboquant+ community ran head-to-head perplexity comparisons against llama.cpp's standard quantization formats on Llama-3.1-8B across a 32K-token text corpus:
 
-| Method | Bits/weight | PPL (↓ better) | vs q4_0 |
+| Method | Bits/val | PPL (↓ better) | vs q4_0 |
 |---|:---:|:---:|:---:|
 | f16 (baseline) | 16 | 6.12 | — |
 | q5_0 | 5 | 6.21 | — |
 | q4_0 | 4 | 6.34 | baseline |
-| **turbo4** (K=4b, V=2b) | **~3.8** | **6.31** | **+0.05% better** |
+| **turbo4** (K=4b, V=2b) | **~3.8** | **6.31** | **essentially identical** |
 | turbo3 (K=3b, V=2b) | ~2.8 | 6.41 | +1.1% |
 | q3_K_M | 3.35 | 6.58 | +3.8% |
 
-**turbo4 beats q4_0 on perplexity while using fewer bits.** This is the key result for practitioners: if you're already running q4_0 quantized models, switching to turbo4 gets you a smaller cache with equal or better quality.
+**turbo4 matches q4_0 on perplexity while using fewer bits.** The 0.03 PPL difference (6.31 vs 6.34) is within measurement noise for a single 32K-token run — the meaningful result is that turbo4 achieves this at ~3.8 bits versus q4_0's 4 bits, a 5% further compression at equivalent quality.
 
 ---
 
@@ -117,6 +117,6 @@ TurboQuant at 3.5 bits per coordinate:
   • Zero quality loss on LongBench (6 task types)
   • Works during streaming generation
   • Model-agnostic (tested on Llama, Ministral, Qwen, Phi, DeepSeek)
-  • turbo4 beats q4_0 at lower bit-width
+  • turbo4 matches q4_0 at lower bit-width
   • 104B model at 128K context on consumer hardware
 ```
