@@ -64,13 +64,13 @@ Modern models use variants that share Key and Value heads across groups of Query
 | **MHA** (Multi-Head Attention) | 32 (one per Q head) | GPT-2, early BERT | 1× (baseline) |
 | **GQA** (Grouped Query Attention) | 8 (shared across groups of 4) | Llama 3, Mistral, Gemma | 0.25× |
 | **MQA** (Multi-Query Attention) | 1 (shared across all Q heads) | Falcon, PaLM | 0.03× |
-| **MLA** (Multi-head Latent Attention) | Low-rank projection | DeepSeek-V2/V3 | ~0.07× |
+| **MLA** (Multi-head Latent Attention) | Low-rank projection | DeepSeek-V2/V3 | ~0.06–0.13×* |
 
 **GQA** is now the dominant approach. Llama 3, Mistral, Gemma, and Qwen all use it. Instead of 32 independent K/V heads, GQA has 8 K/V heads each shared by 4 Q heads. This gives 4× KV cache reduction with minimal quality loss.
 
-**MLA** (used by DeepSeek) takes a different approach: compress Keys and Values into a shared low-rank latent vector and decompress at attention time. This achieves even higher compression at the architecture level.
+**MLA** (used by DeepSeek) takes a fundamentally different approach: rather than sharing heads, it projects Keys and Values into a shared low-rank latent space and decompresses at attention time. The actual cache reduction depends on the rank chosen and the model's head dimension — the ~0.06–0.13× figure is a rough estimate across known DeepSeek configurations, not a fixed ratio.
 
-> **GQA and TurboQuant are complementary, not alternatives.** GQA cuts the cache 4× at the architecture level. TurboQuant compresses the remaining cache another 4× at the bit-width level. Combined: 16× reduction versus the original MHA at full precision.
+> **GQA and TurboQuant are complementary, not alternatives.** GQA cuts the cache 4× at the architecture level by reducing the number of heads. TurboQuant compresses each remaining head's cache another 4× at the bit-width level. On a GQA model, combining both gives roughly 16× reduction versus a full-precision MHA baseline — though the exact number depends on both the GQA configuration and the TurboQuant bit-width chosen.
 
 ---
 
