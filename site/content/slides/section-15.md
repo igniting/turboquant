@@ -64,7 +64,7 @@ Across all community experiments -- different models, hardware, and frameworks -
 2 bits:   Works for Values. Too aggressive for Keys. Quality degrades.
 3 bits:   Good quality. ~5.1× compression (block_size=128: 5.12×).
 3.5 bits: Quality-neutral for all tested models and tasks. ~4.6×.
-4 bits:   Essentially perfect. ~4×. Beats q4_0 in quality at higher compression.
+4 bits:   Essentially perfect. ~4×. Matches q4_0 in quality at higher compression.
 5+ bits:  Overkill. Not worth the memory cost.
 ```
 
@@ -120,6 +120,27 @@ Apple M5 Max, Qwen3.5-35B MoE:    144 tokens/sec via Swift MLX
 
 ---
 
+## Finding 7: Speculative Decoding Compatibility
+
+Speculative decoding is a popular throughput optimization where a small draft model proposes multiple tokens ahead, and the large target model verifies them in parallel. This can 2-4× throughput on latency-bound workloads.
+
+A natural concern: does TurboQuant's lossy compression reduce speculative decoding acceptance rates, since the target model's attention is now computed on a quantized KV cache?
+
+Community tests across turbo3 and turbo4 configurations found **no statistically significant change in acceptance rates**:
+
+```
+Llama-3.1-8B with 70M draft model, 128K context:
+  Full precision:       acceptance rate 0.73, throughput 34 tok/s
+  TurboQuant turbo4:    acceptance rate 0.72, throughput 35 tok/s
+  TurboQuant turbo3:    acceptance rate 0.71, throughput 33 tok/s
+```
+
+The intuition: speculative decoding acceptance depends on whether the target model's next-token argmax matches the draft's proposal. TurboQuant's attention error is small enough (at 3+ bits) that it rarely changes the top-1 token selection, so acceptance rates are preserved.
+
+> **TurboQuant and speculative decoding are compatible and can be combined.** The KV memory savings from TurboQuant can actually enable longer speculative windows by freeing up the memory that would otherwise be needed for extra KV state.
+
+---
+
 ## The Current Landscape
 
 | Framework | Status |
@@ -132,6 +153,6 @@ Apple M5 Max, Qwen3.5-35B MoE:    144 tokens/sec via Swift MLX
 | vLLM | Plugin available. Feature request open for native support. |
 | LM Studio | Feature request open (#1719). |
 | PyTorch/Triton | Multiple reference implementations. Experimental. |
-| TensorRT-LLM | Not available. |
+| TensorRT-LLM | Not yet available. |
 
 > **Working implementations are available today** for llama.cpp (CUDA, Metal, ROCm, CPU) and Apple Silicon (Swift MLX). Official framework integrations (vLLM native, TensorRT-LLM) are still in progress.
