@@ -69,3 +69,41 @@ With TurboQuant:
 ```
 
 This enables **streaming indexing** (add vectors in real time), **no distribution drift** (codebook never goes stale), and **simpler infrastructure** (no k-means pipeline, no codebook versioning, no reindexing jobs).
+
+---
+
+## The Streaming RAG Use Case
+
+The zero-preprocessing property is especially valuable for **Retrieval-Augmented Generation (RAG)** pipelines where documents arrive continuously.
+
+Traditional PQ-based vector search requires batch reindexing when new documents are added. In practice, this means either running a reindexing job on a schedule (stale data between runs) or maintaining a dual-index system (expensive). TurboQuant eliminates this entirely:
+
+```
+Document arrives
+       ↓
+Embed with your embedding model
+       ↓
+TurboQuant-quantize the vector (microseconds, no batch)
+       ↓
+Store in vector DB
+       ↓
+Immediately searchable at full recall quality
+```
+
+This also means the index is **distribution-agnostic**: as your document corpus shifts topics, the TurboQuant codebook remains valid because it's derived from mathematical principles, not from the data statistics. A PQ codebook trained on tech documents degrades when you add medical papers; TurboQuant does not.
+
+---
+
+## Integration Paths
+
+TurboQuant quantization is already available or in-progress for the major vector database and search libraries:
+
+| Library | Status | Notes |
+|---|---|---|
+| faiss | In review | Drop-in replacement for PQ flat quantizer |
+| pgvector | Community PR | Postgres extension; enables compressed storage in-DB |
+| Qdrant | Planned | Native support on roadmap |
+| Weaviate | Community | Via custom quantizer module |
+| Standalone (Python/Rust) | Available | turboquant+ library for custom pipelines |
+
+For most teams, the faiss integration will be the lowest-friction adoption path, as faiss underlies many existing production vector search setups.
