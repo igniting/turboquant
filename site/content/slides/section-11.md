@@ -90,64 +90,47 @@ Because QJL has **variance** proportional to the input's squared norm:
 
 ```
 Variance with Stage 1:    (π/2d) × 0.03 × ||q||²   (residual is small)
-Variance without Stage 1: (π/2d) × 1.0  × ||q||²   (full vector)
-
-Ratio: 33× less variance with Stage 1!
+Variance without Stage 1: (π/2d) × 1.0 × ||q||²   (full vector)
 ```
 
-> **Stage 1 makes the residual small. Stage 2 handles it without bias. Together: low variance AND zero bias.**
+Without Stage 1, QJL's variance is 33x higher (for 3-bit target). The residual's small norm is what makes QJL's variance acceptable.
 
 ---
 
-## The JPEG Analogy
+## Storage Requirements
 
 ```
-JPEG:
-  Stage 1: DCT + coarse quantization     → captures the broad structure
-  Stage 2: Fine detail encoding           → corrects high-frequency errors
+TurboQuant_prod at b bits per coordinate:
 
-TurboQuant:
-  Stage 1: Rotation + Lloyd-Max (b-1 bits) → captures the vector's structure
-  Stage 2: QJL on residual (1 bit)         → corrects the inner product bias
+  Stage 1 component:   (b-1) bits per coordinate
+  Stage 2 component:   1 bit per coordinate + 1 scalar (||r||)
+
+  Total per vector: b bits per coordinate + 1 scalar
+  Overhead from scalar ||r||: 16 bits / 128 coordinates = 0.125 bits per coordinate
+
+  Effective cost: b + 0.125 bits per coordinate ≈ b bits  (overhead is small)
 ```
 
 ---
 
-## The Complete Distortion Guarantee
+## The Practical Catch — When QJL Backfires
 
-Theorem 2: for $b$ bits total, TurboQuant_prod achieves:
+In the controlled experiments above, QJL clearly outperforms the MSE-only approach. But community implementations across llama.cpp, vLLM, and MLX revealed a surprising finding for production LLM inference:
 
-- **Unbiasedness:** $E[\langle q, \tilde{k} \rangle] = \langle q, k \rangle$
-- **Distortion:** within 2.7x of the information-theoretic lower bound
+**At 3+ bits, skipping the QJL stage consistently yields better perplexity.**
 
-For $d = 128$ at $b = 3$: inner product distortion $\approx 0.0014 \times \|q\|^2$ -- tiny.
-
-The $1/d$ factor means **higher dimensions give better estimates** -- exactly the regime where KV caches operate ($d = 64$ to $256$ per head).
-
----
-
-## The Full Algorithm Summary
+The culprit is softmax amplification. At 3-bit precision, the MSE bias has already shrunk to ~3% of the inner product. But QJL's residual estimation introduces variance that, when exponentiated by softmax, creates larger fluctuations than the original bias would have. The bias is small and systematic (tolerable); the QJL variance is unpredictable (harmful).
 
 ```
-ONE-TIME SETUP:
-  1. Generate random rotation matrix Π
-  2. Generate random Gaussian matrix S (for QJL)
-  3. Precompute Lloyd-Max codebook for bit-width (b-1)
+Empirical recommendation from turboquant+ community:
 
-QUANTIZE (per vector):
-  1. Rotate:    y = Π · k
-  2. Quantize:  idx = nearest centroids [(b-1) bits]
-  3. Residual:  r = k - dequantize(idx)
-  4. QJL:       qjl = sign(S · r), store ||r||    [1 bit + scalar]
+  b ≤ 2 bits:  Use two-stage TurboQuant_prod
+               → Bias is 20-36%, QJL correction is essential
+               → Variance is less harmful at this bit-width
 
-DEQUANTIZE (per vector):
-  1. Lookup + Unrotate:  k̃_mse = Πᵀ · centroids(idx)
-  2. QJL correction:     k̃_qjl = ||r|| × √(π/2)/d × Sᵀ · qjl
-  3. Combine:            k̃ = k̃_mse + k̃_qjl
-
-PROPERTIES:
-  ✓ Unbiased inner products
-  ✓ Near-optimal distortion (within 2.7×)
-  ✓ Online, GPU-friendly
-  ✓ b bits per coordinate total
+  b ≥ 3 bits:  Use TurboQuant_mse (MSE stage only)
+               → Bias has shrunk to ~3%, acceptable for softmax
+               → Skipping QJL eliminates its variance cost
 ```
+
+> **The theoretical optimum and the practical optimum diverge at 3+ bits.** This doesn't invalidate the theory — it reveals that LLM attention is a stricter environment than embedding search, where the full two-stage approach remains the right choice.
