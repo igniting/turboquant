@@ -4,75 +4,103 @@ weight: 17
 part: "Part VI — Practical & Closing"
 ---
 
-![Closing — The Three-Step Summary](/img/s17-closing.webp)
+![Closing: The Three-Step Summary](/img/s17-closing.webp)
 
-We started with a question: why does your GPU run out of memory when you give an LLM a long document? The answer was the KV cache -- a memory structure that grows with every token, often exceeding the model weights themselves.
-
-Then we asked: can you compress it? And we spent time understanding why that's hard -- you need to preserve inner products, not just vectors; softmax amplifies small errors; and the compression must work online, without ever seeing the data in advance.
-
-TurboQuant answers all of this with three operations.
+We've covered a lot of ground. Let's bring it back to the essentials.
 
 ---
 
-## Three Operations
+## The Problem in One Sentence
+
+Every token you generate stores a Key and Value vector at every layer of the model. At scale -- millions of users, 128K context windows, 70B parameters -- this fills your GPU faster than the model weights do.
+
+---
+
+## The Insight in Three Steps
+
+**Step 1 — Rotate**
+
+Apply a random rotation matrix to each KV vector. This redistributes whatever "spiky" structure the raw vectors had into a smooth, near-Gaussian distribution. The rotation preserves inner products perfectly (rotations are orthogonal transformations), so attention accuracy is unchanged before quantization.
+
+**Step 2 — Quantize**
+
+Apply Lloyd-Max scalar quantization to the rotated, near-Gaussian vector. Because the distribution is now Gaussian, the codebook is optimal. Theory guarantees you're within 2.72× of the information-theoretic limit — closer than any other practical algorithm.
+
+**Step 3 — Correct (when needed)**
+
+If you're below 3 bits, add a 1-bit QJL sketch of the residual to eliminate the systematic bias that the MSE quantizer introduces. Above 3 bits, the bias is small enough that softmax tolerates it, and the correction step's variance costs more than it saves.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                                                         │
-│                      TurboQuant                         │
-│                                                         │
-│    1.  ROTATE      Walsh-Hadamard Transform makes any   │
-│                    vector's coordinates predictable     │
-│                    and independent.                     │
-│                                                         │
-│    2.  QUANTIZE    A precomputed codebook snaps         │
-│                    each coordinate to 2-4 bits.         │
-│                    Near-optimal MSE.                    │
-│                                                         │
-│    3.  CORRECT     1-bit QJL on the residual            │
-│                    removes inner product bias.          │
-│                    (In practice: PolarQuant at 3+ bits) │
-│                                                         │
-│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
-│                                                         │
-│  Online:       No training, no calibration, no data.    │
-│  Fast:         One transform + table lookup.            │
-│  Optimal:      Within 2.7× of the theoretical limit.   │
-│  Practical:    Zero quality loss at 3.5 bits (4.6×).    │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+b ≤ 2:   Rotate → Quantize (b-1 bits) → QJL residual
+b ≥ 3:   Rotate → Quantize (b bits)
 ```
 
 ---
 
-## Three Numbers to Remember
+## The Results in Three Numbers
 
-**1.** Each additional bit reduces quantization error by **4x**.
-
-**2.** At 3.5 bits, KV cache compression is **quality-neutral** on every benchmark tested -- 4.6x smaller, identical outputs.
-
-**3.** TurboQuant is provably within **2.7x** of the best any algorithm could ever achieve. It's not a heuristic -- it's near-optimal by mathematical proof.
+- **3.5 bits** — the bit-width at which TurboQuant achieves zero measurable quality loss on LongBench across six task types
+- **4.6×** — the compression ratio at 3.5 bits
+- **0.997** — TurboQuant's Needle-in-a-Haystack recall at 128K context, identical to the uncompressed baseline
 
 ---
 
-## The Bigger Picture
+## Who Should Care
 
-TurboQuant is one algorithm, but it represents a broader shift. The era of solving AI infrastructure problems by buying more GPUs is ending. The next wave of progress comes from algorithms -- from understanding the mathematical structure of data and exploiting it.
+**If you run inference today:**
+TurboQuant in the turboquant+ library (CUDA, ROCm, Metal, CPU) works on Llama, Qwen, Mistral, Gemma, Phi, DeepSeek variants, and vision-language models. The practical recipe: turbo4 for quality-first, turbo3 for maximum throughput. Keys at 4 bits, Values at 2 bits, boundary layers protected at higher precision.
 
-Shannon proved in the 1940s that there are fundamental limits to compression. Zador extended this to vectors in the 1960s. Lloyd and Max designed optimal scalar quantizers in the 1950s and 60s. The Johnson-Lindenstrauss lemma dates to 1984.
+**If you're building serving infrastructure:**
+The three orthogonal wins are now available together: PagedAttention for allocation, FlashAttention for prefill, TurboQuant for decode KV bandwidth. Use all three. In disaggregated serving, TurboQuant also compresses inter-node KV transfers 4-5×, which can be the tightest bottleneck at long context.
 
-TurboQuant combines ideas that are **40 to 80 years old** -- random rotation, optimal scalar quantization, information-theoretic lower bounds -- and applies them to a problem that didn't exist three years ago. That's the power of understanding fundamentals.
+**If you're evaluating SSM/Mamba-style alternatives:**
+SSMs trade long-range retrieval fidelity for the elimination of KV cache growth. For workloads where exact retrieval matters — agents, RAG, legal/medical documents — attention with TurboQuant compression remains the more reliable architecture. For workloads where throughput matters and fine-grained retrieval does not, SSMs are a legitimate alternative. The choice is workload-dependent, not a blanket win for either side.
 
-The community has validated this: a 104B model running at 128K context on a single MacBook. Not a research demo -- a working implementation used by engineers today.
+**If you're training new models:**
+Consider MLA (DeepSeek's architectural approach) during pretraining. MLA achieves sub-0.1× KV cache compression without any inference-time quantization, at the cost of a different training-time architecture. TurboQuant and MLA address the same problem at different stages: TurboQuant is the best compression for models that exist today; MLA is the architectural choice for models being trained tomorrow.
 
 ---
 
-## Read the Paper, Try the Code
+## The Competitive Landscape — Why the Timing Matters
 
-- **The paper:** [TurboQuant: Online Vector Quantization with Near-Optimal Distortion Rate](https://arxiv.org/abs/2504.19874) (Google Research, ICLR 2026)
-- **turboquant+:** [github.com/TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus) — the main community implementation (6.1k ★), CUDA/ROCm/Metal/CPU, validated to 104B
-- **llama.cpp fork:** [github.com/TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) — drop-in fork, use `--cache-type-k turbo3 --cache-type-v turbo3`
-- **Community discussion:** [llama.cpp discussion #20969](https://github.com/ggml-org/llama.cpp/discussions/20969) (125 comments, 319 replies)
-- **Apple Silicon (Swift):** [github.com/ekryski/mlx-swift-lm](https://github.com/ekryski/mlx-swift-lm) — 144 tok/s on Qwen3.5-35B on M5 Max
+TurboQuant was published at ICLR 2026 with the paper and blog post but no official code. The community filled that gap within weeks.
 
-The algorithm is ready. The implementations are here. The only question is when it becomes standard infrastructure -- and the answer looks like: soon.
+The reason the timing matters: **Google has implementation advantages that no one else does.**
+
+Google can integrate TurboQuant directly into XLA and TPU firmware — fused into the attention kernel at the hardware level, running on custom silicon they manufacture. The algorithm's rotation and quantization steps are small, regular computations that map extremely well to TPU systolic arrays. An XLA-native implementation could achieve lower latency and higher throughput than any GPU-based implementation, because the quantization overhead essentially disappears into the prefill and decode pipelines.
+
+The community implementations on CUDA, ROCm, and Metal are genuine and production-ready. But they are running on hardware designed for different workloads, adding quantization as an external step. Google's advantage is the ability to co-design the algorithm's execution with the hardware it runs on.
+
+```
+Community (CUDA/ROCm/Metal):    Algorithm + hardware, separately optimized
+                                 ~3-5× KV bandwidth improvement
+                                 Quantization has measurable kernel overhead
+
+Google (TPU + XLA + firmware):  Algorithm + hardware, co-designed
+                                 Potential for near-zero quantization overhead
+                                 Already have the serving infrastructure to deploy at scale
+```
+
+This gap is time-bounded. TPU-specific implementations will take time to productionize. The 6–18 month window before that happens is the window for everyone else to close the gap on their own hardware.
+
+> **The algorithm is public. The math is the same for everyone. The race now is implementation quality, hardware efficiency, and integration depth — and that race has already started.**
+
+---
+
+## The One-Slide Version
+
+```
+Problem:   KV cache grows without bound. At 128K context, it exceeds the model weights.
+           Every generation step reads the entire cache from HBM.
+
+Algorithm: Rotate each vector → near-Gaussian distribution.
+           Quantize → within 2.72× of information-theoretic optimum.
+           At 3+ bits, skip the bias correction.
+
+Result:    3.5 bits per coordinate. Zero quality loss. 4.6× compression.
+           104B model. 128K context. One MacBook.
+
+What's next: Tensor-parallel integration. vLLM native support.
+             Disaggregated KV transfer compression.
+             And Google racing to productionize this on TPUs.
+```
