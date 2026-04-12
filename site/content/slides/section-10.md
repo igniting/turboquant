@@ -52,46 +52,47 @@ Bias:  0.318 vs 0.50 → 36% underestimate!
 ```
 Bit-width    Bias factor        Inner product preserved
    1         2/π   ≈ 0.637     ~64% of true value
-   2                ≈ 0.88      ~88% of true value
-   3                ≈ 0.97      ~97% of true value
-   4                ≈ 0.993     ~99.3% of true value
+   2         ~0.85             ~85%
+   3         ~0.97             ~97%
+   4         ~0.993            ~99.3%
 ```
 
 ---
 
-## Why Bias Is Worse Than Noise for Attention
+## Why Uniform Bias Isn't the Problem
 
-You might think: if all inner products are scaled by the same factor, softmax will compensate -- the relative ranking stays the same.
+You might think: "If every inner product is scaled by 0.637, then softmax will normalize things out -- the relative ranking of attention scores is preserved."
 
-This would be true if the bias were a **uniform multiplicative factor**. But it's not. The bias depends on the **magnitude of the true inner product**:
+This is partially true for **uniform** bias (same scale factor applied to all scores). But the bias is not uniform:
 
 ```
-When true IP ≈ 0.01:  bias ≈ 0.001  (small)
-When true IP ≈ 0.06:  bias ≈ 0.005
-When true IP ≈ 0.10:  bias ≈ 0.010
-When true IP ≈ 0.17:  bias ≈ 0.020  (larger)
+Token A with true inner product 0.80  →  quantized: E[ĨP] = 0.637 × 0.80 = 0.510
+Token B with true inner product 0.20  →  quantized: E[ĨP] = 0.637 × 0.20 = 0.127
+Token C with true inner product 0.00  →  quantized: E[ĨP] = 0.637 × 0.00 = 0.000
 ```
 
-**Higher true inner products get biased more.** The tokens that *should* receive the most attention are the ones whose scores are reduced the most. This **compresses the score distribution** -- high scores pulled down more than low scores. Through softmax, this makes attention more uniform, weakening the model's ability to focus.
+In softmax, the gaps between scores matter more than the absolute values. Softmax of [0.80, 0.20, 0.00] vs softmax of [0.51, 0.13, 0.00] gives different distributions -- A gets a larger share in the first case, C gets relatively more weight in the second.
 
-> **Bias doesn't just add noise -- it systematically blunts the attention mechanism's ability to discriminate between relevant and irrelevant tokens.**
+Additionally, when different attention heads have different magnitudes of Key vectors (which they do, especially across layers), the bias scale factor is effectively different per head. This creates **non-uniform shrinkage** that distorts which tokens the model attends to.
 
 ---
 
-## What We Need Instead
+## The Solution: An Unbiased Estimator
 
-```
-Current state (TurboQuant_mse):
-  ✓ Near-optimal MSE
-  ✓ Online, GPU-friendly
-  ✗ Biased inner products
+We need a quantization scheme where:
 
-What we need (TurboQuant_prod):
-  ✓ Near-optimal MSE (or close)
-  ✓ Online, GPU-friendly
-  ✓ UNBIASED inner products     ← the missing piece
-```
+$$E[\langle q, \tilde{k} \rangle] = \langle q, k \rangle$$
 
-The next section shows how TurboQuant achieves this with an elegant two-stage approach: use the MSE quantizer to get close, then apply a 1-bit correction to remove the bias.
+The expected quantized inner product equals the true inner product. Exactly.
 
-*(A preview for the skeptical reader: in Section 15 we'll see that community implementations have found the two-stage fix isn't always worth it at 3+ bits -- the QJL correction's variance can hurt more than the small residual bias. But understanding the theory is essential for knowing when each variant is appropriate.)*
+This requires a fundamentally different approach -- not just better centroids, but a different kind of quantizer. Section 11 introduces the **Quantized Johnson-Lindenstrauss (QJL)** transform, which achieves unbiased estimation by design.
+
+---
+
+## A Note Before Moving Forward
+
+The two-stage solution (MSE quantizer + QJL bias correction) is elegant and theoretically sound. In controlled experiments on embedding vectors, it outperforms the MSE-only approach at low bit-widths. Sections 11–13 follow this theory to its conclusion.
+
+However, Section 15 covers a finding that emerged after the paper's public release: in practice, on real LLM KV caches, the QJL correction stage **hurts more than it helps at 3+ bits**. The reason relates to softmax amplification — QJL's variance interacts with softmax in ways the theory doesn't fully model. This doesn't invalidate the theoretical analysis; it shows that the ideal operating regime differs between embedding search (where QJL wins) and LLM attention (where it doesn't at higher bit-widths).
+
+> **Keep this in mind through Sections 11–13. The theory is correct. The practical tradeoffs are richer.**
