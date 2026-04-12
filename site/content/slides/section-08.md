@@ -52,189 +52,84 @@ Original vector: x = (1.0, 0.0)
     |
     *-----------> x-axis
   (0,0)         (1,0)
-
-All energy in coordinate 1. Coordinate 2 is zero.
 ```
 
-A codebook designed for "typical" values near zero would produce large quantization error on coordinate 1.
-
-Now rotate by a random angle, say $\theta = 53°$:
+After a 45° rotation:
 
 ```
-Rotated vector: Pi . x = (cos 53°, sin 53°) = (0.60, 0.80)
+Rotated vector: x' = (0.707, 0.707)
 
   y-axis
-    |         / (0.60, 0.80)
     |       /
     |     /
-    |   /  53°
-    | /----------> x-axis
+    |   / x'
+    | /
+    *-----------> x-axis
   (0,0)
-
-Energy is now SPREAD across both coordinates.
 ```
 
-The "adversarial" vector has been transformed into a "typical" one. No single coordinate is extreme.
+The energy is now spread equally across both coordinates. Quantizing this rotated vector is much easier -- neither coordinate dominates the error.
+
+> **A random rotation in d dimensions spreads the energy of any input vector nearly uniformly across all d coordinates.**
 
 ---
 
-## What Distribution Do Rotated Coordinates Follow?
+## Why Randomness Makes the Distribution Predictable
 
-This is the mathematical heart of TurboQuant. After random rotation, the input vector becomes a **uniformly distributed random point on the unit hypersphere**. The paper proves (Lemma 1):
+This seems paradoxical: adding randomness makes things *more* predictable? Here's the intuition:
 
-> Each coordinate of a randomly rotated unit vector follows a **Beta distribution**.
+**Before rotation:** The distribution of coordinates depends on the input vector. For a vector pointing mostly in direction 1, coordinate 1 is large and coordinate 2 is small. The distribution is input-dependent -- unpredictable.
 
-Something remarkable happens as the dimension $d$ increases. The Beta distribution **concentrates sharply around zero**:
+**After a random rotation:** By the **Johnson-Lindenstrauss Lemma**, each coordinate of the rotated vector is approximately:
 
-```
-d = 2 (circle):                d = 10:                    d = 128:
+$$y_i = [\Pi x]_i \sim N\!\left(0, \frac{\|x\|^2}{d}\right)$$
 
-Prob                           Prob                        Prob
-|\            /                |                           |
-|  \        /                  |     /\                    |      /\
-|    \    /                    |    /  \                   |     /  \
-|      \/                      |  /      \                 |    /    \
-|                              |/          \               |  /        \
-+---------------               +---------------            +---------------
--1     0     1                 -1    0     1               -1    0     1
+The distribution of each coordinate after a random rotation is Gaussian, with variance determined only by the vector's *length* -- not by its *direction*. Since we normalize vectors to unit length before quantization, the distribution is always $N(0, 1/d)$, regardless of input.
 
-Spread out                     Starting to peak             Extremely concentrated
-```
+> **After a random rotation, every vector's coordinates follow the same distribution.** The codebook can be precomputed once from this known Gaussian distribution and works for all inputs forever.
 
-For $d = 128$ (typical attention head dimension), each coordinate is essentially:
-
-$$\text{Each coordinate} \sim N(0, 1/128), \quad \text{standard deviation} = 1/\sqrt{128} \approx 0.088$$
-
-> **This is the breakthrough:** No matter what the original vector looked like -- adversarial, skewed, concentrated, anything -- after random rotation, each coordinate is drawn from a known, predictable distribution. The original vector's structure is "smeared out" uniformly across all coordinates.
+This solves **Problem 1 from Section 5** (needing to know the distribution). It also makes the coordinates independent (approximately), solving **Problem 2** (correlated coordinates).
 
 ---
 
-## Why Does This Happen?
+## The Practical Implementation: Walsh-Hadamard Transform
 
-The intuition is geometric. A unit vector in $d$ dimensions lives on the surface of a $d$-dimensional sphere. When you multiply by a random rotation, you're randomly re-orienting this vector on the sphere.
+The theory uses a random Gaussian rotation matrix $\Pi$ of size $d \times d$. For $d = 128$, that's 16,384 floating point numbers to store and multiply. For real-time KV cache compression -- handling millions of tokens per second -- this is too slow.
 
-A randomly oriented vector on a high-dimensional sphere has a special property: **no single coordinate carries much energy**. The total energy ($\text{length}^2 = 1$) is spread across $d$ coordinates, so each coordinate carries roughly $1/d$ of the energy.
+In practice, every implementation uses the **Walsh-Hadamard Transform (WHT)** instead.
 
-An analogy: imagine you have 1 liter of paint and 128 buckets. If you pour all the paint into one bucket (adversarial vector), that bucket is full and the rest are empty. Now shake the tray randomly (random rotation). The paint distributes roughly evenly -- each bucket gets about 1/128 of a liter. No bucket is special. And critically, knowing how much paint is in bucket 3 tells you almost nothing about how much is in bucket 7.
+### What Is the WHT?
 
-This is the **concentration of measure** phenomenon.
-
----
-
-## Near-Independence: The Deeper Result
-
-After rotation, each coordinate has a known distribution. But TurboQuant needs something stronger: **coordinates must be nearly independent**.
-
-The paper relies on a result from high-dimensional probability theory:
-
-> **For a random point on the unit sphere in $d$ dimensions, any fixed set of coordinates becomes nearly independent as $d$ grows.**
-
-For $d = 128$, the mutual information between any two coordinates is $O(1/d^2)$ -- essentially negligible.
-
-### Why This Makes Intuitive Sense
-
-The unit sphere constraint says:
-
-$$x_1^2 + x_2^2 + x_3^2 + \ldots + x_{128}^2 = 1$$
-
-If $d = 2$, knowing $x_1$ completely determines $x_2$. Strong dependence.
-
-If $d = 128$, knowing $x_1$ tells you that the remaining 127 coordinates still need to sum to approximately $1 - 1/128 \approx 0.992$. Knowing $x_1$ barely constrains them.
-
-> **In high dimensions, each coordinate is such a tiny fraction of the total that knowing one gives negligible information about others.** This is why scalar quantization works.
-
----
-
-## The Complete TurboQuant Algorithm
-
-Now we have all the pieces.
-
-### One-Time Setup (done once, offline)
+The WHT is a specific structured rotation matrix whose entries are all $\pm 1 / \sqrt{d}$. In 4D:
 
 ```
-Step 1: Generate a random rotation matrix Pi
-        (Or use a fast Walsh-Hadamard transform -- O(d log d))
-
-Step 2: Run Lloyd-Max on the known Beta/Gaussian distribution
-        to find optimal centroids for each bit-width
-
-        Example codebooks (for d=128):
-
-        b = 1:  2 centroids:   { -0.080,  0.080 }
-        b = 2:  4 centroids:   { -0.134, -0.040,  0.040,  0.134 }
-        b = 3:  8 centroids:   { -0.186, -0.108, -0.054, -0.018,
-                                   0.018,  0.054,  0.108,  0.186 }
+H_4 =  1/2 × [ 1   1   1   1 ]
+              [ 1  -1   1  -1 ]
+              [ 1   1  -1  -1 ]
+              [ 1  -1  -1   1 ]
 ```
 
-### Quantization (per vector, online)
+The matrix is built recursively: $H_{2d} = \frac{1}{\sqrt{2}} \begin{bmatrix} H_d & H_d \\ H_d & -H_d \end{bmatrix}$, so it's always a power of 2 in size.
+
+### Why WHT Instead of Gaussian Rotation?
+
+Three reasons:
+
+**Speed:** The naive matrix multiply for a $d$-dimensional rotation costs $O(d^2)$ operations. The WHT can be computed in $O(d \log d)$ using a fast butterfly algorithm -- the same structure as the FFT. For $d = 128$, that's 128² = 16,384 vs 128 × 7 ≈ 896 multiply-adds. About 18× fewer operations.
+
+**Memory:** The Gaussian rotation matrix requires storing $d^2$ floats ($128^2 = 16$K parameters). The WHT needs no stored matrix at all -- the structure is implicit in the algorithm.
+
+**Randomization:** WHT alone is a fixed, deterministic rotation (not random). To introduce randomness, you combine it with a **random diagonal sign matrix** $D$ applied before the transform: the full operation is $x' = H \cdot D \cdot x$, where $D_{ii} \in \{+1, -1\}$ uniformly at random. This combined operation -- sometimes written HD or RHDH -- has the same statistical properties as a full random rotation at a fraction of the cost.
 
 ```
-Input: vector x (d-dimensional, unit norm)
+Practical rotation step:
 
-Step 1: Rotate          y = Pi . x
-Step 2: Quantize        idx[j] = nearest centroid to y[j]  (for each j)
-Step 3: Store           idx (d integers, each b bits)
+  D = random diagonal matrix with ±1 on diagonal (one per inference session)
+  H = Walsh-Hadamard matrix (no storage needed, computed on the fly)
+
+  y = H(D · x)    // O(d log d) time, O(d) extra memory for D
 ```
 
-### Dequantization (per vector, online)
+The turboquant+ community library and all major llama.cpp implementations use this HD variant.
 
-```
-Input: idx (d integers, each b bits)
-
-Step 1: Look up         y~[j] = codebook[idx[j]]
-Step 2: Rotate back     x~ = Pi^T . y~
-```
-
-### That's It
-
-```
-Quantize:    rotate -> table lookup
-Dequantize:  table lookup -> rotate back
-
-GPU-friendly: ✓  (matrix multiply and table lookup are perfectly vectorizable)
-Online:       ✓  (each vector processed independently)
-Data-free:    ✓  (codebook depends only on d and b, not on the data)
-```
-
----
-
-## Why Rotation Preserves Inner Products
-
-TurboQuant applies the **same rotation $\Pi$** to all vectors:
-
-```
-True inner product:       <q, k>
-After rotating both:      <Pi.q, Pi.k> = <q, k>    (exact -- rotation preserves IPs)
-After quantizing Pi.k:    <Pi.q, quantize(Pi.k)>  ~  <q, k>   (approximate)
-```
-
-The rotation itself introduces **zero error**. All the error comes from the scalar quantization step -- and that error is minimized by Lloyd-Max.
-
----
-
-## The Globe Analogy
-
-> Imagine you have a pin stuck in a globe at a specific location -- say New Delhi (77°E, 28°N). That's your original vector: a specific point with known coordinates.
->
-> Now spin the globe randomly. The pin is now at a random location. Its new longitude is equally likely to be anywhere. Its latitude follows a specific distribution.
->
-> Before spinning, you knew exactly where the pin was. After spinning, each coordinate is random and predictable in distribution -- even though the pin hasn't moved relative to the globe's surface.
->
-> And if you have **two** pins (two vectors), the angle between them -- their inner product -- is the same before and after spinning. The geometry is preserved; only the coordinate representation changed.
-
----
-
-## Three Problems, One Operation
-
-```
-Problem:   We don't know the data distribution -> can't design optimal codebook
-Solution:  Random rotation FORCES a known distribution -> one codebook works for all data
-
-Problem:   Coordinates are correlated -> scalar quantization is suboptimal
-Solution:  Random rotation makes coordinates NEARLY INDEPENDENT -> scalar is near-optimal
-
-Problem:   Need online, data-free quantization
-Solution:  Rotation + precomputed codebook -> nothing depends on the data
-```
-
-That's the elegance of TurboQuant.
+> **The theoretical guarantees from Section 7 onwards hold for both Gaussian and WHT rotations.** The math doesn't care which orthogonal matrix you use -- only that it's random and orthogonal. WHT + random signs satisfies this. You get identical compression quality at 18× lower computational cost.
