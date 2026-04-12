@@ -53,147 +53,66 @@ q . k = (-0.22*0.41) + (0.55*0.12) + (0.31*-0.38) + (-0.44*0.67)
 Now quantize the Key vector to 2 bits using our uniform buckets:
 
 ```
-Original k:   [ 0.41,  0.12, -0.38,  0.67, -0.15,  0.53,  0.08, -0.29]
-Quantized k~: [ 0.25,  0.25, -0.25,  0.75, -0.25,  0.75,  0.25, -0.25]
+k:          [ 0.41,  0.12, -0.38,  0.67, -0.15,  0.53,  0.08, -0.29]
+Bucket:       [3]    [2]    [1]    [3]    [1]    [3]    [2]    [1]
+Centroid:   [ 0.75,  0.25, -0.25,  0.75, -0.25,  0.75,  0.25, -0.25]
+                                                              ^-- error: 0.04
 ```
 
-**Inner product with quantized key:**
+**Quantized inner product:**
 
 ```
-q . k~ = -0.7925
+q . k_quantized = (-0.22*0.75) + (0.55*0.25) + (0.31*-0.25) + (-0.44*0.75)
+                + (0.18*-0.25) + (-0.61*0.75) + (0.47*0.25) + (0.33*-0.25)
+
+               = -0.6150
 ```
 
-**The error:** 0.0527 (6.2% relative error). That doesn't sound terrible. But watch what happens next.
+**The error is 0.23** -- about 27% of the true inner product. At the attention layer, this shifts the softmax output, potentially routing attention away from the right tokens.
 
 ---
 
-## Why 6% Error Is Actually Catastrophic
+## The Two Problems
 
-Remember softmax -- it's **exponential**. Here's what happens when multiple tokens compete for attention.
+This simple example reveals two independent problems:
 
-Suppose the model needs to attend strongly to token A (the correct answer in a needle-in-a-haystack task):
+**Problem 1: Distribution mismatch.** Our uniform buckets assume values are spread evenly between -1 and 1. Real KV vectors follow a distribution clustered near zero (roughly Gaussian). Using uniform buckets wastes most of the precision on the unlikely extremes.
 
-```
-True attention scores (dot products):
-  Token A: 3.82    <- the "needle" -- highest score
-  Token B: 3.67
-  Token C: 3.51
-  Token D: 3.44
+**Problem 2: Adversarial vectors.** Some vectors have nearly all their energy concentrated in a single coordinate -- e.g., `[0.99, 0.01, 0.01, ...]`. Whatever bucket that large coordinate falls in, the rounding error on just that one element determines the entire inner product error. The other 127 coordinates barely matter.
 
-After softmax (true):
-  Token A: 0.213   <- gets the most attention
-  Token B: 0.181
-  Token C: 0.153
-  Token D: 0.143
-```
-
-Now introduce a 6% error on Token A's score (from quantizing its Key):
-
-```
-Quantized attention scores:
-  Token A: 3.59    <- was 3.82, now reduced by ~6%
-  Token B: 3.67    <- unchanged
-
-After softmax (quantized):
-  Token A: 0.172   <- DROPPED from rank 1 to rank 2!
-  Token B: 0.187   <- NOW THE HIGHEST
-```
-
-**Token A lost its top position.** The model now attends most to Token B instead of Token A. In a needle-in-a-haystack task, the model fails to retrieve the answer -- not because the information is gone, but because quantization noise rearranged the attention ranking.
-
-> **Softmax turns small additive errors into rank changes.** And rank changes in attention mean the model looks at the wrong tokens.
+> **Optimal quantization needs to know the distribution of the data it's compressing.** Uniform quantization assumes uniform distribution -- wrong for KV vectors.
 
 ---
 
-## Two Types of Error: MSE vs Inner Product
+## The Third Problem: Magnitude Outliers
 
-The TurboQuant paper makes a sharp distinction between two error metrics.
+There's a third practical complication that the naive approach ignores completely: **magnitude outliers**.
 
-### MSE (Mean Squared Error)
-
-> *"How close is the reconstructed vector to the original?"*
-
-$$\text{MSE} = \|k - \tilde{k}\|^2 = \sum_i (k_i - \tilde{k}_i)^2$$
-
-### Inner Product Error
-
-> *"How close is the dot product computed with the reconstructed vector to the true dot product?"*
-
-$$\text{IP Error} = |\langle q, k \rangle - \langle q, \tilde{k} \rangle|^2$$
-
-This is what attention actually cares about.
-
-### Why They're Different
-
-**Minimizing MSE doesn't necessarily minimize inner product error.** A quantizer might reconstruct a vector that's close in MSE terms but systematically "shortened":
+In many modern LLMs, a small number of embedding dimensions -- sometimes fewer than 5 out of 128 -- have magnitudes 10–100x larger than the rest. These are called **outlier channels**.
 
 ```
-True vector:         k  = [0.5, 0.5]     (length = 0.707)
-Quantized vector:    k~ = [0.4, 0.4]     (length = 0.566)
+Typical Key vector dimension magnitudes (conceptual):
 
-MSE = (0.1)² + (0.1)² = 0.02   <- looks small!
-
-But for ANY query q:
-  q . k~ = 0.8 * (q . k)        <- 20% systematic underestimate!
+  Dims 0-2:    magnitude ~0.8   (outlier channels)
+  Dims 3-127:  magnitude ~0.05  (normal channels)
 ```
 
-This systematic underestimate is called **bias**. The MSE is low, but every inner product is biased downward. This is exactly the problem TurboQuant has to solve.
+When you apply a single codebook to this vector, the outlier channels dominate the quantization error. Even a small rounding error on dimension 0 (magnitude 0.8) produces more inner product error than a large rounding error on dimension 50 (magnitude 0.05).
 
-> **MSE measures reconstruction quality. Inner product error measures functional quality for attention. They are not the same thing.**
+This magnitude asymmetry turns out to be a key practical challenge for all KV cache quantization methods -- and it connects directly to the observation in Section 15 that Keys and Values have dramatically different magnitude profiles in real models.
+
+> **Any practical KV quantization scheme must handle outlier channels, either by detecting them and allocating more bits, or by normalizing them away before quantization.**
 
 ---
 
-## The Online Constraint
+## The Fundamental Challenge
 
-There's one more constraint that makes KV cache compression uniquely hard: **it must be online**.
+To summarize, a good KV cache quantization algorithm needs to:
 
-An **online** quantizer must compress each vector independently, the moment it arrives, without seeing any other vectors.
+1. **Match the data distribution** -- don't assume uniform; use a codebook optimized for how KV vectors actually look
+2. **Handle adversarial vectors** -- no vector should be dramatically worse than average
+3. **Handle outlier channels** -- a few high-magnitude dimensions shouldn't dominate the error budget
+4. **Preserve inner products** -- not just reconstruct vectors accurately, but specifically preserve the dot products that attention relies on
+5. **Run without preprocessing** -- KV vectors are generated on the fly; you can't run k-means on data you haven't seen yet
 
-```
-Token 1 arrives -> quantize K1, V1 immediately -> store
-Token 2 arrives -> quantize K2, V2 immediately -> store
-Token 3 arrives -> quantize K3, V3 immediately -> store
-...
-```
-
-You can't buffer a batch, can't compute statistics over the dataset, can't run calibration. Each vector is compressed in isolation.
-
-An **offline** quantizer (like GPTQ or AWQ) looks at your data first, learns statistics, and designs a quantization scheme tailored to your specific data distribution. These work great for **model weight** quantization because weights are fixed -- you calibrate once and you're done.
-
-But the KV cache is generated dynamically during inference. Every conversation, every prompt, every token produces different K and V vectors. You can't pre-calibrate because:
-
-1. **You don't know the inputs in advance.**
-2. **Vectors arrive one at a time during generation.**
-3. **Latency matters.** Any preprocessing adds directly to per-token generation time.
-4. **Distribution shifts** across layers, heads, sequence positions, and input types.
-
-> **The KV cache quantizer must work instantly, on any vector, without seeing any other data. That's the online constraint.**
-
----
-
-## The Scorecard
-
-A good KV cache quantizer must:
-
-```
-  ✓ Compress to 3-4 bits per value      (4-5x memory savings)
-  ✓ Preserve inner products accurately   (not just MSE)
-  ✓ Be unbiased                          (no systematic over/under-estimation)
-  ✓ Work online                          (no calibration, no preprocessing)
-  ✓ Be GPU-friendly                      (vectorizable, parallelizable)
-  ✓ Be fast                              (add negligible latency per token)
-  ✓ Be model-agnostic                    (work on any transformer)
-```
-
-Before TurboQuant, no method checked all these boxes:
-
-| Method | Compression | Accurate IPs | Unbiased | Online | GPU-friendly |
-|--------|:-----------:|:------------:|:--------:|:------:|:------------:|
-| Uniform scalar quant | ✓ | ✗ | ✗ | ✓ | ✓ |
-| GPTQ / AWQ | ✓ | ~ | ~ | ✗ | ✓ |
-| Product Quantization | ✓ | ~ | ~ | ✗ | ~ |
-| KIVI | ✓ | ~ | ✗ | ~ | ✓ |
-| QJL (1-bit only) | ✗ | ✓ | ✓ | ✓ | ✓ |
-| **TurboQuant** | **✓** | **✓** | **✓** | **✓** | **✓** |
-
-TurboQuant checks every box. But before we see the algorithm, we need one more piece: how scalar quantization works when you actually know the distribution of your data.
+This is a substantially harder problem than general-purpose compression. TurboQuant solves all five requirements.
