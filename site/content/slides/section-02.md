@@ -14,7 +14,7 @@ You've used ChatGPT, Claude, or Gemini. You type a message, and the model genera
 
 LLMs don't see words -- they see **tokens**.
 
-A token is a chunk of text, roughly a word or a word fragment. The model has a fixed vocabulary of tokens (typically 32K-128K unique tokens), and every input gets split into a sequence of them.
+A token is a chunk of text, roughly a word or a word fragment. The model has a fixed vocabulary of tokens — Llama 3 uses exactly 128K, GPT-4-class models use around 100K, and older models like GPT-2 used 50K. Every input gets split into a sequence of these tokens.
 
 ```
 Input:  "The cat sat on the mat"
