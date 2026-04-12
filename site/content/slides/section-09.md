@@ -40,6 +40,23 @@ This is the $1/4^b$ term at work. It means there are **sharply diminishing retur
 
 ---
 
+## Why Bias Matters More Than MSE — The Softmax Effect
+
+The distortion bounds above measure how accurately individual vectors are reconstructed. But attention doesn't use raw inner products directly -- it pipes them through **softmax**:
+
+$$\text{softmax}(x_i) = \frac{e^{x_i}}{\sum_j e^{x_j}}$$
+
+Softmax is an exponential function. A small additive error $\varepsilon$ in an attention score produces an output error proportional to $e^x(e^\varepsilon - 1)$. For large scores, this amplification can be dramatic.
+
+This has two practical consequences:
+
+1. **Zero-mean random noise** tends to cancel out after softmax, because positive and negative errors balance across tokens.
+2. **Systematic bias** gets amplified in a consistent direction. Non-uniform bias -- where some scores are underestimated more than others -- distorts the attention distribution even after averaging.
+
+> **This is why the bias correction in Section 10 is not just a mathematical nicety.** It's the difference between softmax routing the model correctly and subtly miscounting which tokens matter. The MSE bound above only tells half the story; Sections 10-11 address the other half.
+
+---
+
 ## The Lower Bound: The Laws of Physics
 
 The paper also proves (Theorem 3) that **no algorithm in the universe** -- no matter how clever, how slow, how much memory it uses -- can achieve MSE better than:
@@ -53,93 +70,28 @@ With b bits per coordinate, you have 2^b possible reconstruction values.
 The unit sphere has "volume" that must be covered by these 2^(b*d) total codewords.
 Each codeword "covers" a region of the sphere.
 The average volume per region determines the minimum average distance from
-any point to its nearest codeword.
+a random unit vector to its nearest codeword.
 
-Shannon showed this distance is at least 1/4^b.
-No codebook design can do better.
+This minimum distance is 1/4^b -- a geometric fact, not an engineering shortcoming.
 ```
 
 ---
 
-## The Gap: How Close Is TurboQuant to Perfect?
+## The Gap: How Close Is TurboQuant to Optimal?
 
-| Bit-width | Lower bound (best possible) | TurboQuant (actual) | Distance from perfection |
-|:---:|:---:|:---:|:---:|
-| $b = 1$ | 0.25 | 0.36 | 1.44x |
-| $b = 2$ | 0.0625 | 0.117 | 1.87x |
-| $b = 3$ | 0.0156 | 0.030 | 1.92x |
-| $b = 4$ | 0.0039 | 0.009 | 2.31x |
-| $b \to \infty$ | $1/4^b$ | $2.72/4^b$ | 2.72x |
+Putting the bounds together:
 
-At worst, TurboQuant is **2.72x away from the theoretical optimum**. At low bit-widths (the most practically relevant), it's even closer -- only 1.44x at 1 bit.
+$$\\underbrace{\frac{1}{4^b}}_{\text{lower bound}} \leq \text{MSE} \leq \underbrace{\frac{2.72}{4^b}}_{\text{TurboQuant}}$$
+
+The gap is a factor of **2.72** -- the constant $\sqrt{3\pi}/2$. TurboQuant is within 2.72x of what any algorithm could ever achieve.
 
 ```
-MSE (log scale)
-  |
-  |  \
-  |    \  <- TurboQuant (upper bound)
-  |      \
-  |        \
-  |    \     \
-  |      \     \
-  |        \     \
-  |          \     \
-  |            \     \  <- Lower bound (best possible)
-  |              \     \
-  +------------------------
-    1    2    3    4    5
-         Bit-width (b)
-
-  The two lines are nearly parallel on a log scale.
-  The gap is a constant factor ~ 2.7x.
+Imagine the optimal algorithm is standing at the finish line.
+TurboQuant is standing 2.72 body-lengths behind it.
+Every other practical algorithm is further back.
+The finish line is mathematically unreachable by anyone.
 ```
 
----
+This constant arises from using Lloyd-Max scalar quantization applied to a Gaussian distribution. The Gaussian approximation isn't exact -- real vectors after rotation are close to Gaussian but not perfectly so -- which is why the theoretical bound leaves a 2.72x gap. In practice, the measured MSE is typically tighter than the bound.
 
-## What 2.7x Means in Practice
-
-**The gap is a constant factor, not a function of bit-width.** Many quantization methods have distortion that degrades relative to the optimum as you change parameters. TurboQuant maintains a constant 2.7x gap (or better) everywhere.
-
-**No existing online method comes close.** Uniform scalar quantization (without rotation) has distortion that's exponentially worse than optimal at low bit-widths. The rotation is what closes the gap.
-
-**The gap could theoretically be closed** -- but it would require joint vector quantization (computationally impossible) or data-dependent optimization (violating the online constraint). The 2.7x factor is the price of being online and practical.
-
-**For KV cache, the MSE gap doesn't even matter much.** What matters is downstream model quality, and the experiments show zero quality loss at 3.5 bits.
-
----
-
-## The Exponential Improvement Over Alternatives
-
-The $1/4^b$ scaling means distortion decreases **exponentially** with bit-width:
-
-| Method | Distortion scaling |
-|---|---|
-| Uniform scalar (no rotation) | $\sim 1/2^b$ (exponential, but slower base) |
-| Random rounding | $\sim 1/b$ (polynomial -- much worse) |
-| TurboQuant | $\sim 1/4^b$ (exponential, optimal base) |
-| Lower bound | $= 1/4^b$ (can't do better) |
-
-The difference between $1/2^b$ and $1/4^b$ is enormous:
-
-```
-b = 4:   1/2^4 = 0.0625      vs    1/4^4 = 0.0039    (16x difference!)
-b = 8:   1/2^8 = 0.0039      vs    1/4^8 = 0.0000015 (2500x difference!)
-```
-
-TurboQuant achieves the right **base of the exponent** (4, not 2).
-
----
-
-## The Bottom Line
-
-| Bit-width ($b$) | Compression ratio | MSE ($\leq$) | Quality impact (KV cache) |
-|:---:|:---:|:---:|---|
-| 1 | 16x | 0.36 | Too lossy for most use cases |
-| 2 | 8x | 0.117 | Usable with tricks |
-| 3 | 5.3x | 0.030 | Good quality |
-| 3.5 | 4.6x | ~0.018 | Quality neutral |
-| 4 | 4x | 0.009 | Nearly perfect |
-
-At 3.5 bits, you compress the KV cache by 4.6x with zero quality loss on every benchmark the paper tested. And the theory tells us we're within 2.7x of the best any algorithm could ever achieve.
-
-> **This isn't a heuristic -- it's a provably near-optimal solution.**
+> **TurboQuant is near-optimal by a mathematical proof, not just empirical comparison.** The ceiling on improvement for any algorithm is 2.72x better, and that ceiling is unreachable in practice.
