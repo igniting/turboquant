@@ -132,3 +132,64 @@ The KV cache ecosystem:
 ```
 
 > **TurboQuant addresses the one thing the others don't: the raw size of what's stored per token.**
+
+---
+
+## Prefix Caching — And Why TurboQuant Is Compatible
+
+Production serving systems (vLLM, SGLang, TGI) implement **prefix caching**: when multiple requests share an identical prefix — such as a system prompt or a document passed to every user — the KV cache for that prefix is computed once and reused across requests. This can eliminate large fractions of the KV computation for high-traffic deployments.
+
+TurboQuant is compatible with prefix caching because its rotation matrix is **fixed per model load**, not per request. The rotation applied to a given token at a given layer is always the same, so quantizing the prefix KV cache produces deterministic, reusable results.
+
+```
+Without prefix caching: each request recomputes the system prompt KV
+With prefix caching:    system prompt KV computed once, reused across requests
+With TurboQuant + prefix caching:
+  → Prefix KV is quantized once to ~3.5 bits
+  → Reused across requests in compressed form
+  → 4× less memory per cached prefix, same reuse benefit
+```
+
+> **TurboQuant shrinks not just each user's individual context, but also the shared prefix pool that prefix caching relies on.**
+
+---
+
+## Disaggregated Serving — KV Compression Across Nodes
+
+An increasingly important production architecture **separates prefill and decode** across different nodes: one set of GPUs handles the compute-intensive prompt processing (prefill), another handles the memory-intensive token generation (decode). Between them, the KV cache must be transferred over the network.
+
+At 128K context with a 70B model, that KV transfer can be tens of gigabytes per request — a significant latency and bandwidth cost.
+
+```
+Standard pipeline:
+  Prefill node → [transfer N GB of KV] → Decode node
+
+With TurboQuant:
+  Prefill node → [quantize KV on-the-fly to 3.5 bits]
+             → [transfer N/4 GB of compressed KV]
+             → Decode node (reads directly from compressed cache)
+```
+
+Reducing KV transfer size 4× can halve end-to-end latency for long-context requests in disaggregated setups, without changing the compute on either node. This is an application of TurboQuant that the original paper doesn't discuss but that the community has already started exploring.
+
+---
+
+## What About State Space Models?
+
+Mamba, RWKV, and hybrid architectures like Jamba replace some or all attention layers with **recurrent state space models (SSMs)** that maintain a fixed-size state instead of an ever-growing KV cache. For pure SSM models, there is no KV cache and therefore no KV compression problem.
+
+So does this make TurboQuant irrelevant as SSMs grow in adoption?
+
+Not quite, for two reasons:
+
+**1. SSMs currently trade long-range retrieval for throughput.** Attention with a KV cache can retrieve a specific fact from 100K tokens ago with near-perfect recall. SSMs compress the past into a fixed state and tend to lose fine-grained details over long contexts. The Needle-in-a-Haystack benchmark (Section 13) is exactly the task where this gap appears. For retrieval-heavy workloads — agents, RAG, legal and medical document analysis — attention with TurboQuant compression remains the better choice.
+
+**2. Hybrid architectures still have KV cache for their attention layers.** Models like Jamba, Falcon Mamba, and similar hybrids interleave attention and SSM layers. The attention layers still accumulate a KV cache — smaller than a pure-attention model, but present. TurboQuant applies to exactly those layers.
+
+```
+Pure SSM:    No KV cache → TurboQuant not applicable
+Pure Attn:   Large KV cache → TurboQuant applies fully
+Hybrid:      Partial KV cache → TurboQuant applies to attention layers
+```
+
+> **TurboQuant is relevant wherever attention is used. The question isn't "attention vs SSM" -- it's "which workloads require the retrieval accuracy that only attention provides."**
