@@ -84,7 +84,8 @@ Memory:
 Speed:
   └── 4× less data read from HBM per generation step
   └── Memory-bound generation becomes faster
-  └── Up to 8× attention speedup reported on H100
+  └── Attention kernel speedup of 3-5× measured on H100 (isolated microbenchmark)
+      — does not translate directly to total throughput; attention is ~25% of decode
 
 Cost:
   └── 4× fewer GPUs for the same workload
@@ -103,32 +104,57 @@ Capability:
 
 ## Decode Throughput vs. Time to First Token
 
-One important distinction for production systems: TurboQuant's benefits are concentrated in the **decode** phase, not prefill.
+TurboQuant's benefits are concentrated in the **decode** phase — the right framing depends on context length.
 
-**Prefill** (processing the input prompt) is **compute-bound** — the GPU is running matrix multiplications at near-peak utilization. Reading the KV cache is not the bottleneck here. TurboQuant has minimal impact on prefill speed or time-to-first-token (TTFT).
+**For short to medium inputs (<32K tokens):**
 
-**Decode** (generating output tokens one at a time) is **memory-bandwidth-bound** — the GPU is idle most of the time, waiting to read the KV cache. TurboQuant directly targets this bottleneck.
+- Prefill is **compute-bound**: GPUs run matrix multiplications at near-peak utilization. HBM reads are not the bottleneck. TurboQuant has minimal impact on TTFT here.
+- Decode is **memory-bandwidth-bound**: for each new token, the entire KV cache must be read from HBM. TurboQuant directly cuts this per-step cost.
+
+**For long inputs (>64K tokens):**
+
+- Prefill attention becomes **memory-bandwidth bound** for its attention layers — the same regime FlashAttention was designed for. At these context lengths, reducing KV cache size with TurboQuant also reduces prefill HBM traffic, and **TTFT does improve**, typically by 20–40% at 128K+ context.
+- Decode benefits are even larger: 4× less KV data per step, at a context length where each step is expensive.
 
 ```
-Where TurboQuant helps:
-  ✅ Decode throughput (tokens/s for long generations)
-  ✅ Concurrent user capacity (more users per GPU)
-  ✅ Max context length per GPU
-  ❌ Time to first token (TTFT) — prefill is compute-bound, not bandwidth-bound
+Context < 32K:   TurboQuant → decode throughput ↑, TTFT unchanged
+Context > 64K:   TurboQuant → decode throughput ↑↑, TTFT also improves (~20-40%)
 
 Design implication:
-  For latency-sensitive (chatbot, copilot):  TTFT matters → FlashAttention, chunked prefill
-  For throughput-sensitive (batch, agents):  Decode speed matters → TurboQuant
-  For long-context (documents, codebases):  Both → use all three
+  For short-context chatbots:       FlashAttention for TTFT, TurboQuant for throughput
+  For long-context (docs, agents):  TurboQuant improves both
+  For batch processing:             TurboQuant is the highest-leverage single change
 ```
 
-> **TurboQuant is a decode optimization. Pair it with chunked prefill or speculative decoding for latency-sensitive workloads.**
+> **The "TurboQuant doesn't help TTFT" rule of thumb holds at short context. At the long contexts where it matters most, TTFT improves too.**
+
+---
+
+## Production Deployment: Tensor Parallelism
+
+At serving scale, models run across multiple GPUs using **tensor parallelism (TP)**. Each GPU holds a shard of the attention weight matrices and a corresponding slice of the KV cache — at TP=8, each GPU stores 1/8 of the total KV vectors.
+
+TurboQuant must be applied per-shard:
+
+```
+TP=8 deployment, Llama-70B:
+  8 GPUs, each holding 10 attention heads (of 80 total in GQA config)
+  Each GPU quantizes its own 10-head KV slice independently
+  Scale factors are per-block, per-head, per-GPU → no cross-GPU communication needed
+
+Correct: quantize the shard on the owning GPU before storing
+Wrong:   quantize globally then shard → scale factors span GPU boundaries
+```
+
+The good news: TurboQuant's per-block independence means quantization is naturally embarrassingly parallel across shards. Each GPU quantizes its slice without coordination. The scale factors are local to each shard and don't need to be shared.
+
+> **TP-aware implementation is required for production use.** Existing community implementations (turboquant+ for llama.cpp) handle single-GPU cases correctly; multi-GPU serving stacks (vLLM, TGI) will need explicit TP integration.
 
 ---
 
 ## Disaggregated Serving — Where TurboQuant Has Untapped Leverage
 
-Modern high-throughput inference increasingly uses **disaggregated prefill/decode**: prefill runs on a cluster of compute-optimized nodes, decode runs on memory-optimized nodes, and the KV cache is transferred over the network between them.
+Modern high-throughput inference increasingly uses **disaggregated prefill/decode**: prefill runs on compute-optimized nodes, decode runs on memory-optimized nodes, and the KV cache is transferred over the network.
 
 At 128K context with a 70B model, a single request's KV cache can exceed 50 GB at full precision — a significant network transfer on every new session.
 
@@ -139,16 +165,14 @@ Without TurboQuant:
 With TurboQuant:
   Prefill node → [quantize to 3.5 bits on-the-fly]
              → [~11 GB transfer]
-             → Decode node (runs directly from compressed cache)
+             → Decode node (reads directly from compressed cache)
 ```
 
-A 4-5× reduction in KV transfer size translates directly into lower inter-node latency and higher effective throughput per network link. This is an emerging application area — disaggregated serving systems like Mooncake and SGLang's disaggregated mode are well-positioned to benefit.
+A 4-5× reduction in KV transfer size translates directly into lower inter-node latency and higher effective throughput per network link. This applies equally to **KV migration** during load rebalancing, where caches are moved between decode nodes. Disaggregated systems like Mooncake and SGLang's disaggregated mode are well-positioned to benefit.
 
 ---
 
 ## Compatibility Summary
-
-For teams evaluating TurboQuant alongside their existing infrastructure:
 
 | Technology | Compatible with TurboQuant? | Notes |
 |---|:---:|---|
@@ -159,5 +183,6 @@ For teams evaluating TurboQuant alongside their existing infrastructure:
 | Continuous batching | ✅ Yes | Smaller KV raises the memory watermark |
 | GQA / MQA models | ✅ Yes | Compresses the already-reduced KV heads |
 | Disaggregated serving | ✅ Yes | Reduces cross-node KV transfer size |
+| Tensor parallelism | ✅ Yes | Per-shard, no cross-GPU coordination |
 | Pure SSM models (Mamba) | ❌ N/A | No KV cache to compress |
 | TensorRT-LLM | ⏳ Pending | Not yet integrated |
