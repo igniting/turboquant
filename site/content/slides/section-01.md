@@ -6,7 +6,7 @@ part: "Part I — Setting the Stage"
 
 ![KV Cache: The Real Memory Monster](/img/s01-memory-monster.webp)
 
-Running Llama 3.1 8B with 512 concurrent users at 32K context requires **8 TB of memory** -- just for the KV cache. That's 100 H100 GPUs doing nothing but storing past tokens. This section explains exactly *where* that memory goes, and how a [paper from Google Research](https://arxiv.org/abs/2504.19874) makes most of it disappear -- without losing a single correct answer.
+Running Llama 3.1 8B with 512 concurrent users at 32K context requires roughly **2 TB of memory** -- just for the KV cache. That's 25+ H100 GPUs doing nothing but storing past tokens. This section explains exactly *where* that memory goes, and how a [paper from Google Research](https://arxiv.org/abs/2504.19874) makes most of it disappear -- without losing a single correct answer.
 
 ---
 
@@ -38,43 +38,55 @@ Every new token adds a fixed amount of memory. And it adds that memory **at ever
 
 ## The Brutal Math
 
-Let's do the math for **Llama 3.1 8B**, a relatively small model. (Note: this calculation assumes the non-GQA configuration for simplicity. Real Llama 3.1 uses Grouped Query Attention with 8 KV heads instead of 32, reducing the cache by 4x -- but even with GQA, the KV cache dominates at long contexts.)
+Let's do the math for **Llama 3.1 8B**. Modern LLMs use two different attention variants, and the KV cache size differs substantially between them.
+
+**Simplified MHA (Multi-Head Attention) — for illustration:**
 
 ```
 KV cache per token = 2 (key + value)
                    × 32 (layers)
-                   × 32 (attention heads)
+                   × 32 (attention heads)  ← full MHA
                    × 128 (dimension per head)
                    × 2 bytes (float16)
-                   = 524,288 bytes
-                   ≈ 0.5 MB per token
+                   = 524,288 bytes ≈ 0.5 MB per token
 ```
 
-Now scale that:
+**Actual Llama 3.1 8B uses GQA (Grouped Query Attention) — 8 KV heads, not 32:**
 
-| Context Length | KV Cache Size | What This Means |
-|---------------|--------------|-----------------|
-| 1K tokens | ~0.5 GB | A short chat -- fits easily |
-| 8K tokens | ~4 GB | A long conversation -- tight on a 16 GB GPU |
-| 32K tokens | ~16 GB | A document -- **equals the model weights** |
-| 128K tokens | ~64 GB | A book -- needs 1-2 H100 GPUs **just for the cache** |
+```
+KV cache per token = 2 (key + value)
+                   × 32 (layers)
+                   × 8 (KV heads, shared across 4 query groups)
+                   × 128 (dimension per head)
+                   × 2 bytes (float16)
+                   = 131,072 bytes ≈ 0.125 MB per token
+```
 
-> **Key Insight:** At 32K context, the KV cache is as large as the model itself. At 128K context, it's 4x larger. The cache, not the model, becomes the bottleneck.
+GQA reduces the KV cache 4x versus MHA. But even at 0.125 MB per token, scale tells the rest of the story:
+
+| Context Length | MHA (simplified) | GQA (actual Llama 3.1) | What This Means |
+|---------------|-----------------|------------------------|-----------------|
+| 1K tokens | ~0.5 GB | **~0.125 GB** | A short chat |
+| 8K tokens | ~4 GB | **~1 GB** | A long conversation -- tight on a consumer GPU |
+| 32K tokens | ~16 GB | **~4 GB** | A document -- equals the model weights |
+| 128K tokens | ~64 GB | **~16 GB** | A book -- fills one H100 just for the cache |
+
+> **Key Insight:** Even with GQA's 4x reduction, at 128K context the KV cache still equals the entire model. And that's for *one user*. GQA reduced the constant; it didn't change the linear growth.
 
 ---
 
 ## The Server Room Perspective
 
-Now think about this from a production serving perspective:
+Now think about this from a production serving perspective (GQA — actual Llama 3.1 8B numbers):
 
 | Scenario | KV Cache Memory |
 |----------|----------------|
-| 1 user, 32K context | 16 GB |
-| 10 concurrent users, 32K each | 160 GB |
-| 100 concurrent users, 32K each | 1.6 TB |
-| 512 concurrent users, 32K each | 8 TB |
+| 1 user, 32K context | ~4 GB |
+| 10 concurrent users, 32K each | ~40 GB |
+| 100 concurrent users, 32K each | ~400 GB |
+| 512 concurrent users, 32K each | ~2 TB |
 
-An H100 GPU has 80 GB of HBM. Just the *KV cache* for 5 users at 32K context fills an entire H100 -- before you even load the model.
+An H100 GPU has 80 GB of HBM. With 100 concurrent GQA-equipped users at 32K context, you need 5 H100s just for the KV cache, before loading a single model weight. The 4x GQA win disappears quickly once user count climbs.
 
 This is why:
 
