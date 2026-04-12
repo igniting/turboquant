@@ -96,11 +96,11 @@ This also means the index is **distribution-agnostic**: as your document corpus 
 
 ## Integration Paths
 
-TurboQuant quantization is already available or in-progress for the major vector database and search libraries:
+The table below reflects community-reported status as of April 2026. Official integration timelines can change; check each project's issue tracker for current state.
 
 | Library | Status | Notes |
 |---|---|---|
-| faiss | In review | Drop-in replacement for PQ flat quantizer |
+| faiss | Community PR in review | Drop-in replacement for PQ flat quantizer |
 | pgvector | Community PR | Postgres extension; enables compressed storage in-DB |
 | Qdrant | Planned | Native support on roadmap |
 | Weaviate | Community | Via custom quantizer module |
