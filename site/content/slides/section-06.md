@@ -64,119 +64,105 @@ Probability
 
 For Gaussian data, equal-width buckets are wasteful. Most values live near zero, so you want centroids **closer to zero** where the data is dense.
 
-For a Gaussian $N(0, \sigma^2)$, the optimal 1-bit centroids are at $\pm 0.798\sigma$ (not $\pm 0.5\sigma$).
-
-> **Key insight: The optimal quantizer depends on the probability distribution of the input.** If you know the distribution, you can design a quantizer that minimizes error for that specific distribution.
+For a Gaussian $N(0, \sigma^2)$, the optimal 1-bit centroids are at $\pm 0.7979\sigma$ and the threshold is at 0. This places the centroids where the data density is highest.
 
 ---
 
-## Scaling to More Bits
+## Scaling to Multiple Bits: The Lloyd-Max Quantizer
 
-With $b$ bits, you get $2^b$ buckets:
-
-```
-b = 1:   2 buckets    (2 centroids, 1 boundary)
-b = 2:   4 buckets    (4 centroids, 3 boundaries)
-b = 3:   8 buckets    (8 centroids, 7 boundaries)
-b = 4:  16 buckets    (16 centroids, 15 boundaries)
-```
-
-The set of all centroids is called the **codebook**. Quantization stores only the bucket index ($b$ bits per value). Dequantization looks up the centroid from the codebook.
+For $b$ bits, you have $2^b$ buckets and $2^b$ centroids. The **Lloyd-Max quantizer** finds the optimal placement:
 
 ```
-Quantize:    input value  ->  find nearest centroid  ->  store bucket index (b bits)
-Dequantize:  bucket index ->  look up centroid       ->  return centroid value
+b=1: 2 centroids    [-0.80, +0.80]
+b=2: 4 centroids    [-1.22, -0.40, +0.40, +1.22]
+b=3: 8 centroids    [-1.75, -1.05, -0.50, -0.15, +0.15, +0.50, +1.05, +1.75]
+b=4: 16 centroids   (very dense near zero, sparse at the tails)
 ```
 
-> **Concentrate your limited precision where the data is, not where it isn't.** Narrower buckets near the peak (where most data lives), wider buckets in the tails (where data is rare).
+Each time you add a bit, error drops by roughly 4x. This is the fundamental compression law: **one more bit = one more bit of precision = 4x less distortion.**
+
+The Lloyd-Max quantizer is what TurboQuant uses after the rotation step. It's optimal for Gaussian data.
 
 ---
 
-## The Lloyd-Max Algorithm: Finding Optimal Centroids
+## Quantization in Blocks — Why Block Size Matters
 
-Given a known probability distribution, how do you find the optimal centroids and boundaries? This is exactly a **1-dimensional k-means problem**.
-
-The algorithm (published independently by Lloyd in 1957/1982 and Max in 1960):
+In practice, quantization is applied not to individual numbers in isolation but to **blocks** of numbers together. Each block gets its own scale factor that adapts to that block's magnitude range.
 
 ```
-Initialize: place 2^b centroids somehow (e.g., equally spaced)
+Block quantization (block_size = 4, b = 2 bits):
 
-Repeat until convergence:
-  1. ASSIGN: Set each boundary to the midpoint of adjacent centroids
-     boundary_i = (centroid_i + centroid_{i+1}) / 2
+  Raw values:    [0.41,  0.08, -0.33,  0.67]
+  Block max:     0.67
+  Normalized:    [0.61,  0.12, -0.49,  1.00]   <- scale to [-1, 1]
+  Quantized:     [1,     0,    -1,      2  ]   <- 2-bit indices
+  Scale stored:  0.67 (16-bit float)
 
-  2. UPDATE: Set each centroid to the expected value of the data in its bucket
-     centroid_i = E[x | x in bucket_i]
+  Effective bits per value:
+    2 bits per value + 16-bit scale / block_size
+    = 2 + 16/4 = 6 bits per value  ← worse than unquantized at small blocks!
 ```
 
-### A Concrete Example
+This reveals why block size is a critical hyperparameter, not an implementation detail:
 
-Optimal 2-bit (4 centroids) quantizer for a standard Gaussian $N(0,1)$:
+| Block size | Overhead (16-bit scale / block) | Effective bits at b=4 |
+|:---:|:---:|:---:|
+| 16 | 1.00 bit/val | 5.00 |
+| 32 | 0.50 bit/val | 4.50 |
+| 64 | 0.25 bit/val | 4.25 |
+| **128** | **0.125 bit/val** | **4.125** |
+| 256 | 0.063 bit/val | 4.063 |
 
-```
-Iteration 0 (initial): centroids at [-1.5, -0.5, 0.5, 1.5]
-Iteration 1:           centroids at [-1.51, -0.45, 0.45, 1.51]
-Iteration 2:           centroids at [-1.51, -0.453, 0.453, 1.51]  (converged)
+**Larger block size** → less overhead → better effective compression, but the scale factor covers more values, so extreme outliers within the block increase quantization error for all values in the block.
 
-Optimal 2-bit codebook for N(0,1): {-1.51, -0.453, 0.453, 1.51}
-```
+**Smaller block size** → more overhead → worse compression, but each block adapts more finely to local magnitude variations, preserving accuracy.
 
-The beauty: **once you know the distribution, you solve this optimization once and store the codebook forever.** At runtime, quantization is just "find the nearest centroid" -- a simple comparison.
+The turboquant+ community uses **block_size = 128** by default — the same block size used by GGUF weight quantization and llama.cpp's Q4_K format. This is not a coincidence: 128 elements maps well to SIMD vector widths on both AVX-512 CPUs and CUDA warp operations, and it gives the 5.12× compression figure cited for turbo3.
+
+> **When you see compression ratios like "5.12×", check the block size.** The effective bit-width is always `b + 16/block_size`, not just `b`. Block size 128 at 3 bits → 3.125 effective bits → 16/3.125 = 5.12× compression.
 
 ---
 
-## Codebooks Are Just Lookup Tables
+## Error Types: Random Noise vs Systematic Bias
 
-For an engineer, the codebook is nothing more than a **lookup table**.
+There are two fundamentally different ways a quantizer can be wrong:
 
-```python
-# 3-bit codebook for Gaussian N(0,1) -- 8 centroids
-CODEBOOK = [-2.15, -1.34, -0.76, -0.25, 0.25, 0.76, 1.34, 2.15]
+**Random noise** — the reconstruction error is unpredictable but zero on average:
 
-def quantize(value):
-    """Find nearest centroid, return its 3-bit index."""
-    best_idx = 0
-    best_dist = abs(value - CODEBOOK[0])
-    for i in range(1, 8):
-        dist = abs(value - CODEBOOK[i])
-        if dist < best_dist:
-            best_dist = dist
-            best_idx = i
-    return best_idx  # 3-bit integer (0-7)
-
-def dequantize(index):
-    """Look up centroid from index."""
-    return CODEBOOK[index]
+```
+True value: 0.43
+Reconstructed: 0.43 + noise   where noise is sometimes positive, sometimes negative
+Average error: 0
 ```
 
-For $b \leq 4$ (the practical range for KV cache), the codebook has at most 16 entries. The entire quantize-dequantize operation is trivially fast.
+**Systematic bias** — the reconstruction is consistently wrong in the same direction:
+
+```
+True value: 0.43
+Reconstructed: 0.43 + 0.05   always slightly too high
+Average error: +0.05 (never cancels out)
+```
+
+For compression tasks where you reconstruct the original data (images, audio), random noise is acceptable -- it averages out. But for inner products in attention, systematic bias is more dangerous: it makes the model consistently over- or under-estimate the relevance of certain tokens.
+
+> **The distinction between MSE (quantization accuracy) and bias (systematic error) is the core tension TurboQuant is designed to resolve.** Sections 8-11 explain how it does this.
 
 ---
 
-## The Catch: You Need to Know the Distribution
+## The Block Size and Bits in Practice
 
-Everything above works beautifully **if you know the probability distribution** of the values you're quantizing. Lloyd-Max gives you the optimal codebook for any known distribution.
-
-But in the KV cache problem:
-- Key and Value vectors come from model activations
-- Their distribution depends on the model, the layer, the head, and the input
-- You can't precompute statistics because the data arrives online
-
-This seems like a dead end. You need to know the distribution to build the codebook, but you don't know the distribution because the data is dynamic and unpredictable.
-
-> **This is the problem that TurboQuant's random rotation solves.** Instead of adapting the codebook to the data's distribution (offline, expensive), it transforms the data so that it always has a known, fixed distribution -- regardless of the input. Then a single precomputed codebook works for everything.
-
-Here's a preview:
+The numbers that matter for comparing TurboQuant against standard weight quantization formats:
 
 ```
-1. Random rotation transforms any vector into one with a KNOWN distribution
-   (Beta distribution, which looks Gaussian in high dimensions)
+GGUF weight quantization (for reference):
+  Q4_0:    4.500 bits/weight (block_size=32,  scale=16 bits)
+  Q4_K_M:  4.125 bits/weight (block_size=256, scale=16 bits)
+  Q8_0:    8.500 bits/weight
 
-2. Lloyd-Max gives the OPTIMAL codebook for that distribution
-   (solved once, stored forever)
-
-3. At runtime: rotate the vector, then do a table lookup per coordinate
-   (trivially fast, fully parallelizable)
+TurboQuant KV cache quantization (block_size=128):
+  turbo2:  2.125 bits/val  → 7.5× compression vs fp16
+  turbo3:  3.125 bits/val  → 5.1× compression vs fp16
+  turbo4:  4.125 bits/val  → 3.9× compression vs fp16
 ```
 
-But first, one more piece of background.
+This is why turbo4 at "4.125 bits" beats q4_0 at "4.500 bits" in quality: it achieves lower effective bit-width while using a superior quantization strategy (rotation-based Gaussianization vs direct uniform quantization).
