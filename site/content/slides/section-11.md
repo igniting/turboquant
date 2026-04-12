@@ -134,3 +134,5 @@ Empirical recommendation from turboquant+ community:
 ```
 
 > **The theoretical optimum and the practical optimum diverge at 3+ bits.** This doesn't invalidate the theory — it reveals that LLM attention is a stricter environment than embedding search, where the full two-stage approach remains the right choice.
+
+This finding is one of the most important things the paper doesn't tell you. **Section 15 (Finding 2) covers it in detail**, including the extreme case where QJL causes a 300% perplexity increase at 3-bit on GPT-2. The takeaway: implement the rotation and MSE stage carefully; treat QJL as optional insurance for 2-bit or below.
