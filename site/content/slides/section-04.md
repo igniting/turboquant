@@ -55,169 +55,80 @@ Work: Run ALL THREE tokens through all 32 layers
 Total forward passes: 3 tokens x 32 layers
 ```
 
-See the pattern? At step n, you're recomputing Q, K, V for all n tokens -- even though the first (n-1) tokens haven't changed. By step 1000, you're doing 1000x the work of step 1.
+### The Pattern
 
 ```
-Total work without caching = 1 + 2 + 3 + ... + n = n(n+1)/2 ~ n²/2
+Step N requires: N tokens × 32 layers = 32N operations
+Total work for T tokens: 32 × (1 + 2 + 3 + ... + T) = 16T² operations
+
+For T = 1000:  16 million forward operations
+For T = 10000: 1.6 billion forward operations
 ```
 
-For a 4000-token response, that's ~8 million forward passes instead of 4000. **A 2000x waste.**
+This is **O(T²) computation** -- quadratic in the number of tokens. Without caching, generating long sequences is prohibitively slow.
 
 ---
 
-## The Fix: Cache the Keys and Values
+## The KV Cache Solution
 
-The insight is simple: **the Keys and Values for past tokens don't change**. Once you've computed K and V for token "The" at layer 5, those vectors are the same regardless of what comes after. Only the Query changes (because each new token has a different query).
+The key observation: **Keys and Values for past tokens never change.**
 
-So the fix is:
+Once you've computed K and V for token "The" at layer 5, those values are determined. "The" is not going to update its Key based on future context. So why recompute it?
 
-1. When you process a token, compute its Q, K, V
-2. Use Q for the current attention computation
-3. **Store K and V** in a cache for future steps
-4. Next step, only compute Q, K, V for the **new** token
-5. Look up all the cached K's and V's from previous tokens
-6. Compute attention using the new Q against all cached K's
+Instead:
 
 ```
-Step 1: Process "The"
-  - Compute Q1, K1, V1
-  - Store K1, V1 in cache
-  - Predict -> "cat"
+Step 1: Compute K and V for "The" at all layers
+        → Store in KV cache
 
-Step 2: Process "cat" (only the new token!)
-  - Compute Q2, K2, V2
-  - Store K2, V2 in cache
-  - Attention: Q2 . [K1, K2]^T -> scores -> weighted sum of [V1, V2]
-  - Predict -> "sat"
+Step 2: Compute K and V for "cat" at all layers
+        → Store in KV cache
+        → Retrieve "The"'s K and V FROM CACHE for attention
+        → No recomputation of past tokens
 
-Step 3: Process "sat" (only the new token!)
-  - Compute Q3, K3, V3
-  - Store K3, V3 in cache
-  - Attention: Q3 . [K1, K2, K3]^T -> scores -> weighted sum of [V1, V2, V3]
-  - Predict -> "on"
+Step 3: Compute K and V for "sat"
+        → Store in KV cache
+        → Retrieve "The" and "cat" K/V FROM CACHE
+        → Only compute the new token's K, Q, V
 ```
 
-Total work with caching: n forward passes (one per token), each processing just 1 token. **Linear instead of quadratic.**
-
-
-> **The KV cache trades memory for compute.** You're storing all those K and V vectors so you never have to recompute them. The cost is memory -- which grows linearly with sequence length.
+Each step now does **O(T) work** -- reading the cache and doing attention -- instead of recomputing everything from scratch. Total work drops from O(T²) to O(T).
 
 ---
 
-## Visualizing the Cache Growth
+## What's in the KV Cache
 
-Here's what the KV cache looks like as tokens accumulate, for a single layer with a single attention head:
-
-```
-After token 1 ("The"):
-  Keys:   [ K1 ]                    Values: [ V1 ]
-
-After token 2 ("cat"):
-  Keys:   [ K1 | K2 ]              Values: [ V1 | V2 ]
-
-After token 3 ("sat"):
-  Keys:   [ K1 | K2 | K3 ]        Values: [ V1 | V2 | V3 ]
-
-After token 100:
-  Keys:   [ K1 | K2 | K3 | ... | K100 ]
-  Values: [ V1 | V2 | V3 | ... | V100 ]
-```
-
-Each K and V is a vector of 128 floats (for Llama 8B). And this is just **one head in one layer**. The full picture:
+At any given generation step, the KV cache contains:
 
 ```
-Layer 1:
-  Head 1:  Keys: [K1 ... Kn]  Values: [V1 ... Vn]
-  Head 2:  Keys: [K1 ... Kn]  Values: [V1 ... Vn]
-  ...
-  Head 32: Keys: [K1 ... Kn]  Values: [V1 ... Vn]
+For each layer L (32 layers for Llama 8B):
+  For each KV head H (8 heads for GQA Llama 3.1):
+    K[L][H] = matrix of shape [T × 128]   ← all past tokens' keys
+    V[L][H] = matrix of shape [T × 128]   ← all past tokens' values
 
-Layer 2 through Layer 32: (same structure)
+Total vectors: T × 32 × 8 × 2 = 512T vectors, each 128-dimensional
 ```
 
-That's **32 layers x 32 heads x 2 (K and V) = 2048 separate vectors** stored per token.
+This is exactly what TurboQuant compresses -- every one of those 128-dimensional key and value vectors, from every token, every layer, every head.
 
 ---
 
-## The Exact Memory Math
+## What About PagedAttention and FlashAttention?
 
-Let's build the formula piece by piece:
+You may have heard of other techniques that address KV cache performance. It's worth knowing how they relate to TurboQuant:
 
-```
-KV cache memory per token:
+**PagedAttention (vLLM)** treats GPU memory like a virtual memory system, dividing the KV cache into fixed-size "pages" and allocating them on demand. This solves **memory fragmentation** -- preventing wasted gaps between different users' caches -- and enables efficient batching. It does *not* reduce the total amount of data stored. TurboQuant and PagedAttention are fully complementary: use PagedAttention to manage allocation, use TurboQuant to shrink what's being allocated.
 
-  2               <- Key + Value
-  x n_layers      <- one cache per layer        (32 for Llama 8B)
-  x n_heads       <- one cache per head          (32 for Llama 8B)
-  x d_head        <- dimension of each vector   (128 for Llama 8B)
-  x bytes_per_val <- storage per number          (2 for float16)
-```
-
-Plugging in for **Llama 3.1 8B**:
+**FlashAttention** is an I/O-aware attention algorithm that recomputes certain intermediate values on the fly instead of materializing them in HBM, saving memory bandwidth during the *prefill* phase. It dramatically speeds up processing the initial prompt. However, it doesn't change the size of the KV cache that accumulates during *generation*. Again, complementary to TurboQuant.
 
 ```
-Per token:  2 x 32 x 32 x 128 x 2 = 524,288 bytes ~ 0.5 MB
+The KV cache ecosystem:
+
+  PagedAttention  → fixes HOW memory is allocated (fragmentation)
+  FlashAttention  → speeds up HOW attention is computed (prefill bandwidth)
+  TurboQuant      → shrinks HOW MUCH is stored (cache size and read bandwidth)
+
+  All three together: the current state of the art.
 ```
 
-For larger models, it's even worse:
-
-| Model | Layers | Heads | d_head | Per Token | At 32K |
-|-------|--------|-------|--------|-----------|--------|
-| Llama 8B | 32 | 32 | 128 | 0.5 MB | 16 GB |
-| Llama 70B | 80 | 64 | 128 | 2.5 MB | 80 GB |
-| GPT-4 class | ~120 | ~96 | ~128 | ~5.6 MB | ~180 GB |
-
-> **At 32K context, Llama 70B's KV cache alone fills an entire H100 GPU (80 GB).** There's no room left for the model weights, activations, or anything else.
-
----
-
-## The Generation Bottleneck
-
-At **every single generated token**, the GPU must:
-
-```
-1. Compute Q, K, V for this token           <- small (one token)
-2. Append K, V to the cache                 <- cache grows by one entry
-3. Load ALL cached Keys from GPU memory     <- THIS IS THE BOTTLENECK
-4. Compute dot product of Q with every K    <- scales with cache size
-5. Softmax over all scores                  <- scales with cache size
-6. Load ALL cached Values from GPU memory   <- ANOTHER BOTTLENECK
-7. Weighted sum of Values                   <- scales with cache size
-8. Repeat for all 32 heads x 32 layers
-```
-
-Steps 3 and 6 are the killers. For a 16 GB cache, that's 16 GB of memory reads **per token generated**.
-
-On an H100 with ~3.35 TB/s memory bandwidth:
-
-```
-Time to read 16 GB cache = 16 / 3350 ~ 4.8 ms per token
--> Max ~208 tokens/second (ignoring all other work)
-```
-
-The actual compute needed (the dot products themselves) takes a fraction of a millisecond. **The GPU is spending 90%+ of its time waiting for memory, not computing.**
-
-> **A smaller KV cache means less data to read, which means faster generation.** TurboQuant's 4-5x compression directly translates to faster inference, not just lower memory usage.
-
----
-
-## The Compression Opportunity
-
-```
-Current state:
-  Each value in the KV cache: 16 bits (float16)
-  Per token: 0.5 MB (Llama 8B)
-  At 32K: 16 GB
-
-If we could compress to 4 bits per value (4x compression):
-  Per token: 0.125 MB
-  At 32K: 4 GB                <- fits comfortably on any modern GPU
-
-If we could compress to 3 bits per value (~5.3x compression):
-  Per token: 0.094 MB
-  At 32K: 3 GB                <- room for much longer contexts
-```
-
-The question is: **can you compress from 16 bits to 3-4 bits without breaking the attention mechanism?**
-
-Naive approaches (just rounding to fewer bits) break in subtle ways. The next section explains why.
+> **TurboQuant addresses the one thing the others don't: the raw size of what's stored per token.**
