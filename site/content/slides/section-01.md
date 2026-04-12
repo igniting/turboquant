@@ -115,6 +115,29 @@ Compression doesn't just save memory -- it speeds up inference.
 
 ---
 
+## H200 and Beyond: Bigger HBM Doesn't End the Problem
+
+NVIDIA's H200 has 141 GB of HBM, and the B200 has 192 GB -- roughly 2-2.4× more than the H100. Does that make the KV cache problem go away?
+
+No. It shifts the constraint rather than removing it:
+
+```
+H100 (80 GB):   5 users × 32K context fills the GPU
+H200 (141 GB):  ~11 users × 32K context fills the GPU
+B200 (192 GB):  ~15 users × 32K context fills the GPU
+
+With TurboQuant (4× KV compression):
+H100:           ~20 users × 32K context
+H200:           ~44 users × 32K context
+B200:           ~60 users × 32K context
+```
+
+More memory helps throughput at the same context length, but the industry is simultaneously pushing context windows from 128K toward 1M tokens. Llama 4 Scout supports 10M-token context. At 1M tokens, even a B200 fills up with a single user at full precision.
+
+> **Bigger HBM raises the ceiling, but model ambitions raise it faster. TurboQuant's multiplier compounds with hardware improvements rather than competing with them.**
+
+---
+
 ## The Punchline
 
 So we have a problem:
