@@ -136,3 +136,30 @@ Empirical recommendation from turboquant+ community:
 > **The theoretical optimum and the practical optimum diverge at 3+ bits.** This doesn't invalidate the theory — it reveals that LLM attention is a stricter environment than embedding search, where the full two-stage approach remains the right choice.
 
 This finding is one of the most important things the paper doesn't tell you. **Section 15 (Finding 2) covers it in detail**, including the extreme case where QJL causes a 300% perplexity increase at 3-bit on GPT-2. The takeaway: implement the rotation and MSE stage carefully; treat QJL as optional insurance for 2-bit or below.
+
+
+  ---
+
+  ## When Does QJL Actually Help?
+
+  The two-stage approach is theoretically optimal for the problem it is designed for: **unbiased inner product estimation in embedding search**, where you want the expected result to be correct across many queries and where the output is compared by magnitude rather than piped through an exponential function.
+
+  For LLM attention, the situation is different in one critical way: **softmax amplifies variance**. The softmax function is $e^{x_i} / sum_j e^{x_j}$ — an exponential. If QJL's 1-bit sketch adds high-variance noise to each attention score, softmax does not average it away; it exponentiates it. A small positive noise spike on token A gives A an exponentially larger attention weight, potentially routing attention to the wrong token even though the bias is zero.
+
+  ```
+  Bias vs variance in the attention context:
+
+    MSE quantizer (b-bit):  small bias + low variance → softmax stable
+    QJL sketch (1-bit):     zero bias  + high variance → softmax amplifies noise
+
+    At b=1-2 bits:  QJL's unbiasedness wins — the MSE quantizer's bias is large enough
+                    to consistently misroute attention; QJL's variance is comparatively benign
+    At b≥3 bits:    MSE quantizer's bias is ~3% and shrinks fast; QJL's variance does not.
+                    The variance penalty from softmax amplification exceeds the bias correction benefit.
+  ```
+
+  This is why Section 15's community recommendation is: **use QJL only below 3 bits per coordinate**. Above that, the plain MSE quantizer — TurboQuant_mse — produces better practical results on LLM attention, even though TurboQuant_prod is theoretically unbiased.
+
+  For embedding similarity search (nearest-neighbor retrieval, Section 14), softmax is not involved. QJL wins at all bit-widths there, which matches the paper's primary validation setting (DBpedia retrieval, Section 12).
+
+  > **The right tool depends on what comes after the inner product.** Embedding search: use QJL. LLM attention at ≥3 bits: use MSE-only. LLM attention at 1-2 bits: the theory says QJL should help, and the community agrees.
