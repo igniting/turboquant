@@ -92,6 +92,32 @@ This solves **Problem 1 from Section 5** (needing to know the distribution). It 
 
 ---
 
+## How Well Does Gaussianization Work? The Role of Dimension d
+
+The Johnson-Lindenstrauss approximation is not exact — it is asymptotically correct as dimension $d$ increases. A larger $d$ means more random projections contribute to each rotated coordinate, and the central limit theorem convergence is tighter.
+
+This has a practical implication: the quality of Gaussianization after WHT depends on the head dimension of the model you're compressing.
+
+```
+d = 1536  (OpenAI embedding models):
+  → Very good Gaussianization. Close to the theoretical guarantee.
+  → Paper's primary validation target.
+
+d = 128   (Llama 3, Mistral, Gemma, Qwen):
+  → Good Gaussianization. Some residual non-Gaussianity remains.
+  → Community kurtosis measurements: 900 → ~2.9 after WHT (Gaussian target: 3.0)
+  → Confirmed to work well empirically across 30+ hardware configs.
+
+d = 64    (older models, some efficient variants):
+  → Weaker Gaussianization. The theoretical bound is looser.
+  → More aggressive compression (turbo2) may show quality degradation faster.
+  → Validate empirically before deploying turbo3 or below.
+```
+
+The community results (Section 15) confirm the algorithm works at d=128 — the validation came from empirical testing, not the paper's theoretical guarantee. If you're deploying on a model with d=64, run your own perplexity tests before assuming the standard bit-width recommendations hold.
+
+---
+
 ## The Practical Implementation: Walsh-Hadamard Transform
 
 The theory uses a random Gaussian rotation matrix $\Pi$ of size $d \times d$. For $d = 128$, that's 16,384 floating point numbers to store and multiply. For real-time KV cache compression -- handling millions of tokens per second -- this is too slow.
@@ -132,4 +158,10 @@ Practical rotation step:
 
 The turboquant+ community library and all major llama.cpp implementations use this HD variant.
 
-> **The theoretical guarantees from Section 7 onwards hold for both Gaussian and WHT rotations.** The math doesn't care which orthogonal matrix you use -- only that it's random and orthogonal. WHT + random signs satisfies this. You get identical compression quality at 18× lower computational cost.
+### GPU Implementation Note
+
+On CPU (AVX-512) and Apple Silicon (AMX), WHT's butterfly pattern maps efficiently to SIMD units. On CUDA, the stride-2 butterfly access pattern is less cache-friendly for GPU warps, which prefer coalesced 128-byte reads. The rotation step is **negligible overhead when fused inside the attention kernel** — doing the WHT while K/V data is already in registers, before the quantize-and-write step. Implemented as a standalone pre-processing pass over HBM, the overhead is measurable. Production CUDA implementations should fuse the rotation into the attention write path.
+
+The llama.cpp benchmarks showing "speed parity with q8_0" are measured on CPU/Metal. These numbers are representative for that runtime; GPU implementations require kernel fusion to achieve comparable overhead.
+
+> **The theoretical guarantees hold for both Gaussian and WHT rotations.** WHT + random signs satisfies the orthogonality requirement. You get identical compression quality at 18× lower computational cost — provided the rotation is fused into the kernel on GPU.
