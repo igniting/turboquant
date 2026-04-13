@@ -116,8 +116,8 @@ HBM bandwidth — the ceiling on memory-bound throughput:
   B200 SXM:  8.00 TB/s  (+139% vs H100)
 
 At 32K context with Llama 8B GQA, KV data per decode step:
-  FP16:      4 GB × 2 bytes = 8 GB → up to 0.41 ms read time on H100
-  TurboQuant 4-bit: ~2 GB  → ~0.10 ms read time on H100
+  FP16 KV:          4.0 GB  →  ~1.2 ms read time on H100  (4.0 GB ÷ 3.35 TB/s)
+  TurboQuant 4-bit: 1.0 GB  →  ~0.3 ms read time on H100  (4× less data to move)
 ```
 
 TurboQuant doesn't change the bandwidth ceiling — that's determined by the GPU. What it does is reduce how much data must cross that ceiling every step. At memory-bound context lengths, this translates directly to faster generation.
@@ -161,7 +161,7 @@ So we have a problem:
 - It creates a **bandwidth bottleneck** that slows down generation
 - And it can't be compressed with traditional methods because **it's generated on the fly** -- you can't preprocess it
 
-What if you could compress every vector in the KV cache from 16 bits per coordinate down to 3-4 bits -- a 4-5x reduction -- with **zero loss in model quality**?
+What if you could compress every vector in the KV cache from 16 bits per coordinate down to 3-4 bits -- a 4-5x reduction -- with **near-zero loss in model quality** (and zero measurable loss on standard long-context benchmarks at 3.5 bits)?
 
 That's TurboQuant.
 
