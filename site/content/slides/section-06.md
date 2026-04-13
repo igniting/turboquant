@@ -64,24 +64,22 @@ Probability
 
 For Gaussian data, equal-width buckets are wasteful. Most values live near zero, so you want centroids **closer to zero** where the data is dense.
 
-For a Gaussian $N(0, \sigma^2)$, the optimal 1-bit centroids are at $\pm 0.7979\sigma$ and the threshold is at 0. This places the centroids where the data density is highest.
-
 ---
 
 ## Scaling to Multiple Bits: The Lloyd-Max Quantizer
 
-For $b$ bits, you have $2^b$ buckets and $2^b$ centroids. The **Lloyd-Max quantizer** finds the optimal placement:
+For $b$ bits, you have $2^b$ buckets and $2^b$ centroids. The **Lloyd-Max quantizer** finds the optimal placement by minimizing mean squared error for a given distribution. For a Gaussian with standard deviation $\sigma$, the 1-bit optimal centroids are at $\pm \sqrt{2/\pi} \cdot \sigma \approx \pm 0.7979\sigma$.
+
+**For TurboQuant specifically:** after the rotation step (Section 8), each coordinate of a d-dimensional unit vector follows $N(0, 1/d)$, so $\sigma = 1/\sqrt{d}$. For d=128, $\sigma \approx 0.088$, and the actual codebook centroids are at approximately $\pm 0.7979 / \sqrt{128} \approx \pm 0.071$ — much smaller than the ±0.80 you'd use for σ=1. The Lloyd-Max tables must be computed for the specific σ of your head dimension d.
 
 ```
-b=1: 2 centroids    [-0.80, +0.80]
-b=2: 4 centroids    [-1.22, -0.40, +0.40, +1.22]
-b=3: 8 centroids    [-1.75, -1.05, -0.50, -0.15, +0.15, +0.50, +1.05, +1.75]
-b=4: 16 centroids   (very dense near zero, sparse at the tails)
+b=1 centroids (illustrative, σ=1):  [-0.80, +0.80]
+b=2 centroids (illustrative, σ=1):  [-1.22, -0.40, +0.40, +1.22]
+b=3 centroids (illustrative, σ=1):  [-1.75, -1.05, -0.50, -0.15, +0.15, +0.50, +1.05, +1.75]
+b=4 centroids (illustrative, σ=1):  16 values, dense near zero, sparse at tails
 ```
 
 Each time you add a bit, error drops by roughly 4x. This is the fundamental compression law: **one more bit = one more bit of precision = 4x less distortion.**
-
-The Lloyd-Max quantizer is what TurboQuant uses after the rotation step. It's optimal for Gaussian data.
 
 ---
 
@@ -149,9 +147,28 @@ For compression tasks where you reconstruct the original data (images, audio), r
 
 ---
 
-## The Block Size and Bits in Practice
+## A Note on Integer vs Floating-Point Quantization Formats
 
-The numbers that matter for comparing TurboQuant against standard weight quantization formats:
+TurboQuant uses **integer codebook quantization**: each value is stored as an integer index into a precomputed Lloyd-Max codebook, and dequantized by table lookup. The indices are 2-bit, 3-bit, or 4-bit integers — not floating-point numbers.
+
+This is the same format used by GGUF weight quantization (Q4_0, Q4_K_M, Q8_0). Comparing TurboQuant against these formats by effective bit-width is apples-to-apples.
+
+However, NVIDIA's Blackwell architecture (B200, B100) introduces native **NVFP4** support — a 4-bit *floating-point* format (E2M1: 2 exponent bits, 1 mantissa bit, 1 sign bit). NVFP4 tensor core instructions operate on this specific format; they do not natively accelerate arbitrary 4-bit integer indices. TurboQuant's INT4 codebook indices and Blackwell's FP4 tensor core format are different representations.
+
+```
+TurboQuant INT4:  index 0-15 into a Lloyd-Max lookup table  → table lookup dequant
+NVFP4 (E2M1):    4-bit floating-point number (range 0-6, 8 steps)  → hardware-native
+
+To use TurboQuant on Blackwell FP4 hardware paths:
+  Option A: Keep TurboQuant INT4, use custom CUDA kernel (no FP4 acceleration)
+  Option B: Map Lloyd-Max centroids to nearest FP4 values (approximation, needs validation)
+```
+
+This is an open engineering question for the community. It does not affect CPU, Metal, or current-generation CUDA implementations — it only matters if you want to exploit Blackwell's native FP4 paths specifically.
+
+---
+
+## Effective Bit-Widths in Practice
 
 ```
 GGUF weight quantization (for reference):
@@ -163,6 +180,9 @@ TurboQuant KV cache quantization (block_size=128):
   turbo2:  2.125 bits/val  → 7.5× compression vs fp16
   turbo3:  3.125 bits/val  → 5.1× compression vs fp16
   turbo4:  4.125 bits/val  → 3.9× compression vs fp16
+
+Hardware-native KV compression (for comparison):
+  FP8 KV:  8.0 bits/val   → 2× compression vs fp16 (zero overhead on H100+)
 ```
 
-This is why turbo4 at "4.125 bits" beats q4_0 at "4.500 bits" in quality: it achieves lower effective bit-width while using a superior quantization strategy (rotation-based Gaussianization vs direct uniform quantization).
+This is why turbo4 at "4.125 bits" beats q4_0 at "4.500 bits" in quality: it achieves lower effective bit-width while using a superior quantization strategy (rotation-based Gaussianization vs direct uniform quantization). And it's why FP8 KV is the right starting point before considering TurboQuant — you get 2× for free, and TurboQuant gets you the next 2× at the cost of software complexity.
