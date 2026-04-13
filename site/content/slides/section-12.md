@@ -8,6 +8,8 @@ part: "Part V — Does It Actually Work?"
 
 We've built up the theory across several sections. Does it hold up on real data? The paper validates on the **DBpedia Entities dataset** -- 100,000 real-world text embeddings from OpenAI's embedding model (1536 dimensions), with 1,000 separate query vectors for inner product accuracy.
 
+> **Dimensionality note:** The paper validates at d=1536 (OpenAI embedding vectors). KV attention heads in Llama, Mistral, and Gemma use d=128 — a 12× difference. The WHT's Gaussianization quality improves with d, so d=1536 is the "easy" case where theory and experiment converge most cleanly. The community experiments below fill the gap: they validate the algorithm at d=128, the harder and more practically relevant case.
+
 ---
 
 ## Every Theoretical Prediction Is Confirmed
@@ -43,23 +45,25 @@ At higher bit-widths (3-4 bits), the MSE variant's bias shrinks and becomes hard
 
 ---
 
-## Post-Publication Validation: The Community Confirms
+## Post-Publication Validation: The Community Confirms at d=128
 
-After the paper's March 2026 public release, independent developers validated TurboQuant's claims across a much broader set of conditions than the original paper covered:
+After the paper's March 2026 public release, independent developers validated TurboQuant's claims across a much broader set of conditions than the original paper covered — critically including d=128, the actual attention head dimension for most deployed models.
 
-| Validation axis | Paper covered | Community added |
+| Validation axis | Paper (d=1536) | Community (d=128) |
 |---|---|---|
-| Embedding models | OpenAI embeddings (1536-dim) | sentence-transformers, Cohere, GTE, BGE |
-| LLM families | Llama-3.1-8B, Ministral-7B | Qwen 2.5, Phi-3, DeepSeek, Mistral-Nemo |
-| Hardware | V100/A100 GPU | M1/M2/M3/M5 Mac, RTX 3080-5090, AMD 6800XT/9070XT |
-| Context lengths | Up to 104K | 128K+ on consumer hardware |
+| Embedding models | OpenAI text-embedding-3 | sentence-transformers, Cohere, GTE, BGE |
+| LLM families | — | Llama, Mistral, Qwen, Phi, DeepSeek |
+| Hardware | V100/A100 GPU | M1–M5 Mac, RTX 3080–5090, AMD 6800XT/9070XT |
+| Context lengths | — | Up to 128K on consumer hardware |
 | Inference engines | Standalone PyTorch | llama.cpp, vLLM, MLX, Rust |
 
 Key community findings that extend the paper:
 
-1. **The 4x error reduction per bit holds across all tested model families** -- the information-theoretic argument is truly model-agnostic.
-2. **WHT performs identically to Gaussian rotation** in all tested configurations (confirming Section 8's analysis), at ~18× lower computational cost.
-3. **The 3.5-bit sweet spot** confirmed across models: at 3 bits Keys + 2 bits Values (non-integer average), quality matches full precision while delivering ~5× compression.
-4. **V compression is nearly free** across all tested models: compressing Values to 2 bits with Keys at 3-4 bits produces no measurable quality loss, while compressing Keys aggressively degrades quality significantly.
+1. **The 4× error reduction per bit holds at d=128 across all tested model families** -- the information-theoretic argument is model-agnostic and holds even at the lower dimensionality where Gaussianization is less complete.
+2. **WHT performs identically to Gaussian rotation at d=128** in all tested configurations, at ~18× lower computational cost. The kurtosis of Qwen3 KV tensors dropped from 900 to ~2.9 after WHT (target Gaussian kurtosis: 3.0).
+3. **The 3.5-bit sweet spot** confirmed at d=128: 3 bits Keys + 2 bits Values (non-integer average) matches full-precision quality across six LongBench task categories.
+4. **V compression is nearly free at d=128** across all tested models: compressing Values to 2 bits with Keys at 3-4 bits produces no measurable quality loss. Keys dominate the error budget because of their larger norms.
 
-> **What the paper proved mathematically, the community validated empirically across 30+ hardware configurations and 10+ model families within weeks of release.**
+Note on model family taxonomy: the paper validates on Llama-3.1-8B and Ministral-7B. The community added Qwen 2.5, Phi-3, and DeepSeek as architecturally distinct families. Mistral-7B and Mistral-Nemo share the same GQA architecture and should be counted as one family; the community's contribution is Qwen, Phi, and DeepSeek (which uses MLA), where the attention head structure genuinely differs.
+
+> **What the paper proved mathematically at d=1536, the community validated empirically at d=128 across 30+ hardware configurations and 10+ model families within weeks of release.**
