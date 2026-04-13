@@ -117,7 +117,7 @@ This reveals why block size is a critical hyperparameter, not an implementation 
 
 The turboquant+ community uses **block_size = 128** by default — the same block size used by GGUF weight quantization and llama.cpp's Q4_K format. This is not a coincidence: 128 elements maps well to SIMD vector widths on both AVX-512 CPUs and CUDA warp operations, and it gives the 5.12× compression figure cited for turbo3.
 
-> **When you see compression ratios like "5.12×", check the block size.** The effective bit-width is always `b + 16/block_size`, not just `b`. Block size 128 at 3 bits → 3.125 effective bits → 16/3.125 = 5.12× compression.
+> **When you see compression ratios like "5.12×", check the block size.** The effective bit-width is `b + scale_bits/block_size`, where `scale_bits` is 16 for FP16/BF16 scale storage (the turboquant+ default and llama.cpp GGUF formats) or 32 for FP32 scale storage. At the default 16-bit scale: block size 128 at 3 bits → 3.125 effective bits → 16/3.125 = 5.12× compression. Implementations using FP32 scale factors give 3.375 bits at block_size=128 — an 8% difference worth verifying for your deployment.
 
 ---
 
