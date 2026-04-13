@@ -6,13 +6,17 @@ part: "Part II — The KV Cache Problem"
 
 ![Why Compressing the KV Cache Is Hard](/img/s05-compression-hard.webp)
 
-The most obvious approach -- just round everything to fewer bits -- fails in subtle ways. Let's see exactly why.
+Before asking "can we compress the KV cache?", it helps to ask "how far can we get for free?"
+
+**The easy step — FP8 — is already solved.** H100, H200, and B200 all have hardware-native FP8 tensor cores. Storing the KV cache in FP8 instead of FP16 gives 2× compression with zero algorithmic overhead, zero rotation, zero codebook lookup. It already ships in vLLM, TGI, and TensorRT-LLM. If 2× is enough for your workload, use FP8 and stop there.
+
+TurboQuant's territory is the next factor of 2–3×: going from 8 bits down to 3–4 bits. This is below what hardware handles automatically, and this is where the problems below appear. Everything in this section applies specifically to the regime where you need more than FP8 gives you.
 
 ---
 
 ## "Just Round Everything" — The Naive Approach
 
-Say we want 2-bit quantization (4x compression). We divide the value range into 4 buckets and snap each number to the nearest bucket center.
+Say we want 2-bit quantization (8× compression over FP16, 4× over FP8). We divide the value range into 4 buckets and snap each number to the nearest bucket center.
 
 ```
 Original float16 range: [-1.0 to 1.0]
@@ -56,7 +60,6 @@ Now quantize the Key vector to 2 bits using our uniform buckets:
 k:          [ 0.41,  0.12, -0.38,  0.67, -0.15,  0.53,  0.08, -0.29]
 Bucket:       [3]    [2]    [1]    [3]    [1]    [3]    [2]    [1]
 Centroid:   [ 0.75,  0.25, -0.25,  0.75, -0.25,  0.75,  0.25, -0.25]
-                                                              ^-- error: 0.04
 ```
 
 **Quantized inner product:**
@@ -114,5 +117,6 @@ To summarize, a good KV cache quantization algorithm needs to:
 3. **Handle outlier channels** -- a few high-magnitude dimensions shouldn't dominate the error budget
 4. **Preserve inner products** -- not just reconstruct vectors accurately, but specifically preserve the dot products that attention relies on
 5. **Run without preprocessing** -- KV vectors are generated on the fly; you can't run k-means on data you haven't seen yet
+6. **Be GPU-kernel-expressible** -- the quantized format must be efficiently dequantizable in GPU registers, inside the attention kernel, from a tiled HBM read; not every valid compression scheme can be fused without becoming the bottleneck
 
-This is a substantially harder problem than general-purpose compression. TurboQuant solves all five requirements.
+This is a substantially harder problem than general-purpose compression. TurboQuant solves all six requirements.
