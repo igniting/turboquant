@@ -6,7 +6,7 @@ part: "Part I — Setting the Stage"
 
 ![KV Cache: The Real Memory Monster](/img/s01-memory-monster.webp)
 
-Running Llama 3.1 8B with 512 concurrent users at 32K context requires roughly **2 TB of memory** -- just for the KV cache. That's 25+ H100 GPUs doing nothing but storing past tokens. This section explains exactly *where* that memory goes, and how a [paper from Google Research](https://arxiv.org/abs/2504.19874) makes most of it disappear -- without losing a single correct answer.
+Running Llama 3.1 8B with 512 concurrent users at 32K context requires roughly **2 TB of memory** -- just for the KV cache. At 80 GB per H100, that's the memory capacity of 25+ GPUs consumed by one model's conversation history. This section explains exactly *where* that memory goes, and how a [paper from Google Research](https://arxiv.org/abs/2504.19874) makes most of it disappear -- without losing a single correct answer.
 
 ---
 
@@ -107,34 +107,48 @@ During token generation, for every single new token, the model must:
 2. Compute attention scores against all cached tokens
 3. Write the new token's key and value back to the cache
 
-This read-everything-every-step pattern means KV cache memory bandwidth, not compute, is the bottleneck during generation. This is why LLM generation feels slow -- the GPU is waiting for data, not computing.
+The relevant metric here is **arithmetic intensity** — the ratio of compute operations to bytes of memory accessed. At short contexts, the FFN layers dominate and arithmetic intensity is high (compute-bound: the GPU is working hard). As context grows, the KV cache read dominates and arithmetic intensity drops sharply (memory-bound: the GPU is waiting for data, not computing).
 
-> **Smaller KV cache = less data to read each step = faster generation.**
+```
+HBM bandwidth — the ceiling on memory-bound throughput:
+  H100 SXM:  3.35 TB/s
+  H200 SXM:  4.80 TB/s  (+43% vs H100)
+  B200 SXM:  8.00 TB/s  (+139% vs H100)
 
-Compression doesn't just save memory -- it speeds up inference.
+At 32K context with Llama 8B GQA, KV data per decode step:
+  FP16:      4 GB × 2 bytes = 8 GB → up to 0.41 ms read time on H100
+  TurboQuant 4-bit: ~2 GB  → ~0.10 ms read time on H100
+```
+
+TurboQuant doesn't change the bandwidth ceiling — that's determined by the GPU. What it does is reduce how much data must cross that ceiling every step. At memory-bound context lengths, this translates directly to faster generation.
+
+> **Smaller KV cache = less data to cross the HBM bandwidth ceiling each step = faster decode.**
 
 ---
 
 ## H200 and Beyond: Bigger HBM Doesn't End the Problem
 
-NVIDIA's H200 has 141 GB of HBM, and the B200 has 192 GB -- roughly 2-2.4× more than the H100. Does that make the KV cache problem go away?
+NVIDIA's H200 has 141 GB of HBM3e and 4.8 TB/s bandwidth; the B200 has 192 GB and 8.0 TB/s. That's more capacity *and* more bandwidth. Does that make the KV cache problem go away?
 
-No. It shifts the constraint rather than removing it:
+No. It shifts the constraint on two dimensions simultaneously:
 
 ```
-H100 (80 GB):   5 users × 32K context fills the GPU
-H200 (141 GB):  ~11 users × 32K context fills the GPU
-B200 (192 GB):  ~15 users × 32K context fills the GPU
+Memory capacity comparison (Llama 3.1 8B, 32K context per user, GQA):
+  H100 (80 GB):   ~5 users before KV cache fills the GPU
+  H200 (141 GB):  ~11 users
+  B200 (192 GB):  ~15 users
 
 With TurboQuant (4× KV compression):
-H100:           ~20 users × 32K context
-H200:           ~44 users × 32K context
-B200:           ~60 users × 32K context
+  H100:           ~20 users
+  H200:           ~44 users
+  B200:           ~60 users
 ```
 
-More memory helps throughput at the same context length, but the industry is simultaneously pushing context windows from 128K toward 1M tokens. Llama 4 Scout supports 10M-token context. At 1M tokens, even a B200 fills up with a single user at full precision.
+More HBM raises the memory ceiling. More bandwidth raises the throughput ceiling. But model ambitions are raising both simultaneously: Llama 4 Scout supports 10M-token context. At 1M tokens, even a B200 fills up with a single user at full precision.
 
-> **Bigger HBM raises the ceiling, but model ambitions raise it faster. TurboQuant's multiplier compounds with hardware improvements rather than competing with them.**
+**The rack-scale picture is worth noting:** The GB200 NVL72 — the system unit actually deployed at cloud scale — combines 72 B200 GPUs with 13.5 TB aggregate HBM and 14.4 TB/s NVSwitch fabric. At 13.5 TB, uncompressed KV capacity jumps dramatically. But so does the model size: frontier models that fill a 72-GPU rack at FP16 weights still fill the KV cache at long contexts and high concurrency. TurboQuant's multiplier applies equally to the NVL72's 13.5 TB as to a single GPU's 192 GB.
+
+> **Bigger HBM raises the ceiling, but model ambitions raise it faster. TurboQuant's multiplier compounds with every hardware generation rather than competing with it.**
 
 ---
 
