@@ -80,7 +80,7 @@ This seems paradoxical: adding randomness makes things *more* predictable? Here'
 
 **Before rotation:** The distribution of coordinates depends on the input vector. For a vector pointing mostly in direction 1, coordinate 1 is large and coordinate 2 is small. The distribution is input-dependent -- unpredictable.
 
-**After a random rotation:** By the **Johnson-Lindenstrauss Lemma**, each coordinate of the rotated vector is approximately:
+**After a random rotation:** By the **concentration of measure on the sphere** (specifically, the Haar-measure property of random orthogonal matrices), each coordinate of the rotated vector is approximately:
 
 $$y_i = [\Pi x]_i \sim N\!\left(0, \frac{\|x\|^2}{d}\right)$$
 
@@ -165,3 +165,5 @@ On CPU (AVX-512) and Apple Silicon (AMX), WHT's butterfly pattern maps efficient
 The llama.cpp benchmarks showing "speed parity with q8_0" are measured on CPU/Metal. These numbers are representative for that runtime; GPU implementations require kernel fusion to achieve comparable overhead.
 
 > **The theoretical guarantees hold for both Gaussian and WHT rotations.** WHT + random signs satisfies the orthogonality requirement. You get identical compression quality at 18× lower computational cost — provided the rotation is fused into the kernel on GPU.
+
+  **On RoPE models:** Section 3 flagged that modern LLMs (Llama, Mistral, Qwen, Gemma) apply RoPE positional encoding to the Query and Key vectors *before* they are written to the KV cache. TurboQuant therefore compresses RoPE-rotated Keys. RoPE rotates pairs of dimensions by angles proportional to position — it does not create large outliers or break the Gaussian approximation in any systematic way that the WHT cannot handle. Empirically, the community has confirmed TurboQuant works correctly on all tested RoPE models at d=128 (Section 15). The open question is whether very long-range RoPE extensions (e.g., Llama 3.1's 8M-context variant, which uses frequency scaling) create distributional shifts that affect WHT Gaussianization — this has not been systematically tested.
