@@ -42,22 +42,23 @@ When coordinates are correlated, a **joint** quantizer can exploit this -- desig
 
 ---
 
-## Why Joint Vector Quantization Is Impossible
+## Why Full Joint Vector Quantization Fails
 
-The problem is combinatorial explosion. For typical KV cache parameters ($d = 128$, $b = 3$):
+You might think: use a lookup table of all possible d-dimensional codewords and find the nearest one. The problem is that to cover d-dimensional space with useful precision at b bits per coordinate, you need a codebook with $2^{b \cdot d}$ entries — a number that grows impossibly fast:
 
 ```
-Scalar codebook:  2^3        =          8 entries     <- trivial
-Joint codebook:   2^(3*128)  = 2^384   entries        <- more than atoms in the universe
+d=128, b=3:   codebook needs 2^384 entries  ← more than atoms in the universe
+d=128, b=1:   codebook needs 2^128 entries  ← still impossible
+d=8,   b=3:   codebook needs 2^24 = 16M entries  ← marginal but impractical
 ```
 
-You can't store $2^{384}$ entries. You can't search through them. Joint vector quantization over the full vector is physically impossible.
+Even at 1 bit per coordinate, full VQ over 128 dimensions is physically impossible to store or search.
 
 ---
 
 ## Product Quantization: The Practical Compromise
 
-**Product Quantization (PQ)** is the standard compromise used in vector databases: **split the vector into small groups** and quantize each group jointly.
+**Product Quantization (PQ)** is the standard compromise used in vector databases: **split the vector into small groups** and quantize each group jointly with a small codebook.
 
 ```
 128-dim vector, split into 16 groups of 8 dimensions each:
@@ -65,20 +66,25 @@ You can't store $2^{384}$ entries. You can't search through them. Joint vector q
   [x1 x2 ... x8 | x9 x10 ... x16 | ... | x121 ... x128]
    --group 1---   ---group 2----         ---group 16---
 
-Each group: quantized jointly using a codebook of 2^b entries
+Each group: quantized jointly using a learned codebook of 256 entries (8 bits)
 ```
 
-PQ captures correlations *within* each group while ignoring correlations *between* groups. But it has a fatal flaw for KV cache: **building the codebook requires k-means clustering on your data**.
+PQ captures correlations *within* each group while ignoring correlations *between* groups. In benchmarks it works well. But it has a disqualifying flaw for KV cache quantization, which brings us back to **Requirement 5 from Section 5: run without preprocessing**.
+
+**PQ violates Requirement 5.** Building the codebook requires k-means clustering on a representative sample of vectors before you can quantize anything:
 
 ```
 PQ codebook construction:
-  1. Collect a large dataset of vectors
+  1. Collect a large dataset of vectors from your specific model and domain
   2. Split each vector into groups
-  3. Run k-means (with 256 clusters) on each group
-  4. 37-494 seconds of compute (from the TurboQuant paper)
+  3. Run k-means on each group (256 clusters each)
+  4. 37–494 seconds of compute (measured by the TurboQuant paper)
+  5. If the distribution shifts (new domain, new model, prompt drift) → repeat
 ```
 
-PQ is an **offline** method. It needs to see your data before it can quantize. That rules it out for the KV cache.
+For KV cache quantization, the data you need to compress is generated at runtime, token by token, for prompts you haven't seen yet. There is no representative sample to cluster on in advance. A codebook trained on technical documentation degrades on legal text; a codebook trained on English degrades on code. And you cannot pause inference to run k-means.
+
+> **PQ's offline calibration requirement is the disqualifying problem for KV cache — not codebook size alone.** The combinatorial explosion makes full VQ impossible, but PQ's search over small codebooks is tractable. It's the prerequisite of needing data you don't have that rules it out.
 
 ---
 
@@ -87,14 +93,14 @@ PQ is an **offline** method. It needs to see your data before it can quantize. T
 We're stuck between two extremes:
 
 ```
-Scalar quantization:  Fast, online, GPU-friendly
+Scalar quantization:  Fast, online, GPU-friendly  (Requirement 5 ✓)
                       But SUBOPTIMAL when coordinates are correlated
 
 Joint quantization:   Optimal (captures all correlations)
                       But IMPOSSIBLE (codebook too large)
 
 Product quantization: Reasonable compromise
-                      But OFFLINE (needs k-means preprocessing)
+                      But OFFLINE (violates Requirement 5 — needs k-means on unseen data)
 ```
 
 Here's the key question TurboQuant answers:
@@ -123,7 +129,7 @@ This is the theoretical foundation of TurboQuant. The entire algorithm is built 
 
 ```
 What we know:
-  ✓ Scalar quantization is fast, online, and GPU-friendly (Section 6)
+  ✓ Scalar quantization is fast, online, GPU-friendly (Section 6)
   ✓ It's optimal IF coordinates are independent (this section)
   ✓ Lloyd-Max gives the optimal scalar codebook IF you know the distribution (Section 6)
 
