@@ -54,6 +54,8 @@ d=8,   b=3:   codebook needs 2^24 = 16M entries  ← marginal but impractical
 
 Even at 1 bit per coordinate, full VQ over 128 dimensions is physically impossible to store or search.
 
+  *(Clarification: a VQ codebook can have any number of entries K, with log₂(K) bits stored per index. The intractability here is specific to matching scalar quantization's per-coordinate bit budget — if you want b bits per coordinate, the single shared codebook must index 2^(b·d) distinct codewords. Smaller codebooks are tractable but can't match the precision of b-bit-per-coordinate scalar quantization.)*
+
 ---
 
 ## Product Quantization: The Practical Compromise
