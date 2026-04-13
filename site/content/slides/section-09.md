@@ -59,11 +59,11 @@ This has two practical consequences:
 
 ## The Lower Bound: The Laws of Physics
 
-The paper also proves (Theorem 3) that **no algorithm in the universe** -- no matter how clever, how slow, how much memory it uses -- can achieve MSE better than:
+The paper also proves (Theorem 3) a **lower bound for the problem class studied**: no online, distribution-agnostic algorithm can achieve MSE better than:
 
 $$\text{MSE} \geq \frac{1}{4^b}$$
 
-This is an **information-theoretic lower bound**. It comes from Shannon's source coding theory -- the same mathematics that governs how much you can compress any signal. It's a law of nature, like the speed of light. No engineering trick can beat it.
+This bound derives from a covering-number argument on the unit sphere — not from Shannon's channel capacity theorem. The key constraint is "online and distribution-agnostic": the algorithm sees each vector once, with no prior knowledge of the data distribution. Rate-distortion-optimal vector quantizers for Gaussian sources can beat 1/4^b by a large constant factor, but they require offline calibration — which is exactly what Requirement 5 from Section 5 rules out for KV cache compression.
 
 ```
 With b bits per coordinate, you have 2^b possible reconstruction values.
