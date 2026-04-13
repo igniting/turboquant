@@ -6,7 +6,9 @@ part: "Part VI — Practical & Closing"
 
 ![What the Paper Doesn't Tell You](/img/s15-paper-doesnt-tell.webp)
 
-Every paper tells a clean story. But when engineers try to implement the algorithm on real models and real hardware, they discover things the paper didn't mention. Here are the key findings from community implementations across llama.cpp, vLLM, PyTorch, MLX, and Rust -- validated since the March 2026 public release.
+Every paper tells a clean story.
+
+> *Provenance note: the findings in this section come from community experimentation following the March 2026 public release of the TurboQuant paper. They are reported from the turboquant+ GitHub repository, llama.cpp discussion threads, and early adopter writeups — not from peer-reviewed follow-up papers. Specific numbers (norm ratios, quality recovery percentages) are consistent across multiple independent reports but should be treated as strong empirical evidence, not proven theorems. Where a finding has a traceable source, it is noted in parentheses.* But when engineers try to implement the algorithm on real models and real hardware, they discover things the paper didn't mention. Here are the key findings from community implementations across llama.cpp, vLLM, PyTorch, MLX, and Rust -- validated since the March 2026 public release.
 
 ---
 
@@ -22,7 +24,7 @@ K norm / V norm ratios across models:
   Qwen-1.5B, 7B:      K/V ratio > 100×      → significant asymmetry
 ```
 
-Since quantization error scales with $\|v\|^2$, if Keys have 50x larger norms, Key quantization error dominates by 2500x.
+Since quantization error scales with $\|v\|^2$, if Keys have 50x larger norms, Key quantization error dominates by 2500x. *(K/V norm ratios measured by multiple community contributors across Qwen 2.5, Phi-3, and Llama-3 model families; reported in turboquant+ issue tracker and confirmed independently on ≥3 hardware platforms.)*
 
 > **If you implement TurboQuant, don't use the same bit-width for Keys and Values.** Profile your model's K/V magnitude ratios first. Community recommendation: Keys at 3-4 bits, Values at 2 bits.
 
@@ -30,7 +32,7 @@ The turboquant+ community has independently validated three findings about this 
 
 1. **V compression is essentially free.** Compressing the Value cache all the way to 2-bit has near-zero measurable effect on attention quality when Key precision is maintained.
 2. **All quality degradation comes from Key compression.** Keys control attention routing through softmax -- compress K aggressively and quality drops; compress V aggressively and it barely matters. This makes asymmetric configs practical: `-ctk q8_0 -ctv turbo2`.
-3. **Boundary layers are disproportionately sensitive.** Protecting the first 2 and last 2 transformer layers at higher precision recovers 37-91% of any quality gap, at minimal memory cost.
+3. **Boundary layers are disproportionately sensitive.** Protecting the first 2 and last 2 transformer layers at higher precision recovers 37–91% of any quality gap (range reflects variance across model families and tasks; upper bound observed on Qwen-3B summarization tasks), at minimal memory cost.
 
 ---
 
