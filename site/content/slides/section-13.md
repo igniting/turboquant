@@ -27,6 +27,8 @@ Hide one sentence in up to 104K tokens and ask the model to find it. If KV cache
 
 > **At 4x compression, TurboQuant doesn't degrade long-context retrieval at all.**
 
+*(Competitor note: this table includes KIVI and PolarQuant, which are the most direct competing KV cache compression methods. Other KV-only methods from the 2024 literature — KVQuant (ICML 2024, per-channel calibration at 3-bit), Gear (group-wise quantization with residual approximation), and H2O / ScissorHands (attention-score-based token eviction) — are not included in the paper's evaluation. The omissions are likely due to evaluation scope; practitioners choosing between methods should run the Needle and LongBench evaluations against KVQuant specifically, as it is the closest architectural competitor at sub-4-bit KV compression.)*
+
 ---
 
 ## Result 2: LongBench — Quality Neutral at 3.5 Bits
