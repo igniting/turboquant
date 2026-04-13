@@ -98,6 +98,6 @@ This requires a fundamentally different approach -- not just better centroids, b
 
 The two-stage solution (MSE quantizer + QJL bias correction) is elegant and theoretically sound. In controlled experiments on embedding vectors, it outperforms the MSE-only approach at low bit-widths. Sections 11–13 follow this theory to its conclusion.
 
-However, Section 15 covers a finding that emerged after the paper's public release: in practice, on real LLM KV caches, the QJL correction stage **hurts more than it helps at 3+ bits**. The reason relates to softmax amplification — QJL's variance interacts with softmax in ways the theory doesn't fully model. This doesn't invalidate the theoretical analysis; it shows that the ideal operating regime differs between embedding search (where QJL wins) and LLM attention (where it doesn't at higher bit-widths).
+Section 11 introduces the specific bias-correction mechanism. After reading it, the practical tradeoffs in Section 15 will make sense: the theory is correct, but real-world deployment on LLM attention surfaces a tension between bias and variance that the theoretical analysis does not fully capture.
 
-> **Keep this in mind through Sections 11–13. The theory is correct. The practical tradeoffs are richer.**
+> **The theory in Sections 11–13 is correct. Section 15 explains where it diverges from practice — and why.**
